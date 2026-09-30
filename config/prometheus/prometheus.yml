@@ -1,0 +1,32 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: api-gateway
+    static_configs:
+      - targets: ["api-gateway:8000"]
+  - job_name: risk-engine
+    static_configs:
+      - targets: ["risk-engine:8000"]
+  - job_name: market-engine
+    static_configs:
+      - targets: ["market-engine:8000"]
+  - job_name: market-data
+    static_configs:
+      - targets: ["market-data:8000"]
+  - job_name: pattern-engine
+    static_configs:
+      - targets: ["pattern-engine:8000"]
+  - job_name: ai-engine
+    static_configs:
+      - targets: ["ai-engine:8000"]
+  - job_name: trade-monitor
+    static_configs:
+      - targets: ["trade-monitor:8000"]
+  - job_name: reconciliation
+    static_configs:
+      - targets: ["reconciliation:8000"]
+  - job_name: telegram-bot
+    static_configs:
+      - targets: ["telegram-bot:8000"]

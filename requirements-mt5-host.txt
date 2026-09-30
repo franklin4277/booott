@@ -1,0 +1,4 @@
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.34,<1.0
+MetaTrader5>=5.0.45,<6.0
+psutil>=6.1,<8.0

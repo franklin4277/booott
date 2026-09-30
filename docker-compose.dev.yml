@@ -1,0 +1,349 @@
+name: ${COMPOSE_PROJECT_NAME:-mt5-trading}
+
+x-service-defaults: &service-defaults
+  build:
+    context: .
+    dockerfile: Dockerfile
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  environment: &service-environment
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: ${POSTGRES_CONTAINER_PORT:-5432}
+    POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+    POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    REDIS_HOST: redis
+    REDIS_PORT: ${REDIS_CONTAINER_PORT:-6379}
+    REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+    RISK_MAX_POSITION_SIZE: ${RISK_MAX_POSITION_SIZE:-0.01}
+    RISK_MAX_DAILY_LOSS: ${RISK_MAX_DAILY_LOSS:-100.0}
+    RISK_MAX_DRAWDOWN_PCT: ${RISK_MAX_DRAWDOWN_PCT:-5.0}
+    RISK_MAX_OPEN_TRADES: ${RISK_MAX_OPEN_TRADES:-3}
+    RISK_MAX_SPREAD_POINTS: ${RISK_MAX_SPREAD_POINTS:-30}
+    FEATURE_AI_SIGNALS: ${FEATURE_AI_SIGNALS:-false}
+    FEATURE_PAPER_TRADING: ${FEATURE_PAPER_TRADING:-true}
+    FEATURE_KILL_SWITCH: ${FEATURE_KILL_SWITCH:-false}
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -c
+      - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=3)"
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 10s
+  networks:
+    - backend
+    - data
+
+services:
+  postgres:
+    image: timescale/timescaledb:2.17.2-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./config/postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - data
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - data
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
+
+  api-gateway:
+    <<: *service-defaults
+    command: ["python", "-m", "uvicorn", "services.api_gateway.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "${API_WORKERS:-2}", "--log-level", "${API_LOG_LEVEL:-info}"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    networks:
+      - backend
+      - data
+      - ingress
+
+  risk-engine:
+    <<: *service-defaults
+    command: ["python", "-m", "uvicorn", "services.risk_engine.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *service-environment
+      ORDER_SIGNING_SECRET: ${ORDER_SIGNING_SECRET:?Set ORDER_SIGNING_SECRET in .env}
+      RISK_MAX_PORTFOLIO_HEAT_PCT: ${RISK_MAX_PORTFOLIO_HEAT_PCT:-2.0}
+      RISK_MAX_CORRELATED_EXPOSURE_PCT: ${RISK_MAX_CORRELATED_EXPOSURE_PCT:-1.0}
+      RISK_CORRELATION_THRESHOLD: ${RISK_CORRELATION_THRESHOLD:-0.7}
+      RISK_CORRELATION_MATRIX: ${RISK_CORRELATION_MATRIX:-}
+      RISK_CONTRACT_UNITS: ${RISK_CONTRACT_UNITS:-100000}
+      RISK_ORDER_TTL_SECONDS: ${RISK_ORDER_TTL_SECONDS:-5}
+      RISK_MAX_SIGNAL_AGE_SECONDS: ${RISK_MAX_SIGNAL_AGE_SECONDS:-60}
+      RISK_ACCOUNT_STATE_MAX_AGE_SECONDS: ${RISK_ACCOUNT_STATE_MAX_AGE_SECONDS:-15}
+      RISK_NEWS_EMBARGO_MINUTES: ${RISK_NEWS_EMBARGO_MINUTES:-15}
+      CALENDAR_API_URL: ${CALENDAR_API_URL:-}
+      CALENDAR_API_KEY: ${CALENDAR_API_KEY:-}
+
+  market-engine:
+    <<: *service-defaults
+    command: ["python", "-m", "uvicorn", "services.market_engine.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *service-environment
+      MT5_ZMQ_BIND_HOST: ${MT5_ZMQ_BIND_HOST:-0.0.0.0}
+      MT5_ZMQ_PUB_PORT: ${MT5_ZMQ_PUB_PORT:-5555}
+      MT5_ZMQ_SUB_PORT: ${MT5_ZMQ_SUB_PORT:-5556}
+
+  market-data:
+    <<: *service-defaults
+    command: ["python", "-m", "uvicorn", "services.market_data.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *service-environment
+      MT5_ZMQ_ENABLED: ${MT5_ZMQ_ENABLED:-true}
+      MT5_ZMQ_TICK_PORT: ${MT5_ZMQ_PUB_PORT:-5555}
+      MT5_ZMQ_BAR_PORT: ${MT5_ZMQ_SUB_PORT:-5556}
+      INDICATOR_EMA_PERIOD: ${INDICATOR_EMA_PERIOD:-20}
+      INDICATOR_ATR_PERIOD: ${INDICATOR_ATR_PERIOD:-14}
+      INDICATOR_RSI_PERIOD: ${INDICATOR_RSI_PERIOD:-14}
+      INDICATOR_SPREAD_PERIOD: ${INDICATOR_SPREAD_PERIOD:-20}
+    ports:
+      - "127.0.0.1:${MT5_ZMQ_PUB_PORT:-5555}:${MT5_ZMQ_PUB_PORT:-5555}"
+      - "127.0.0.1:${MT5_ZMQ_SUB_PORT:-5556}:${MT5_ZMQ_SUB_PORT:-5556}"
+
+  pattern-engine:
+    <<: *service-defaults
+    command: ["python", "-m", "uvicorn", "services.pattern_engine.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *service-environment
+      PATTERN_BASE_TIMEFRAME: ${PATTERN_BASE_TIMEFRAME:-M5}
+      PATTERN_CONFIRMATION_TIMEFRAMES: ${PATTERN_CONFIRMATION_TIMEFRAMES:-M15,H1}
+      PATTERN_HISTORY_SIZE: ${PATTERN_HISTORY_SIZE:-128}
+      PATTERN_STRUCTURE_LOOKBACK: ${PATTERN_STRUCTURE_LOOKBACK:-20}
+      PATTERN_ATR_PERIOD: ${PATTERN_ATR_PERIOD:-14}
+      PATTERN_ATR_BASELINE_PERIOD: ${PATTERN_ATR_BASELINE_PERIOD:-50}
+      PATTERN_ATR_EXPANSION_RATIO: ${PATTERN_ATR_EXPANSION_RATIO:-1.2}
+      PATTERN_MAX_SPREAD_RATIO: ${PATTERN_MAX_SPREAD_RATIO:-2.5}
+      PATTERN_STOP_ATR_MULTIPLIER: ${PATTERN_STOP_ATR_MULTIPLIER:-1.5}
+      PATTERN_REWARD_RISK_RATIO: ${PATTERN_REWARD_RISK_RATIO:-2.0}
+      PATTERN_SIGNAL_VALIDITY_MINUTES: ${PATTERN_SIGNAL_VALIDITY_MINUTES:-30}
+
+  ai-engine:
+    <<: *service-defaults
+    command: ["python", "-m", "uvicorn", "services.ai_engine.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *service-environment
+      AI_PROVIDER: ${AI_PROVIDER:-openai}
+      AI_API_KEY: ${AI_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_REQUEST_TIMEOUT_SECONDS: ${AI_REQUEST_TIMEOUT_SECONDS:-20}
+      AI_CIRCUIT_FAILURE_THRESHOLD: ${AI_CIRCUIT_FAILURE_THRESHOLD:-3}
+      AI_CIRCUIT_RECOVERY_SECONDS: ${AI_CIRCUIT_RECOVERY_SECONDS:-300}
+      AI_STATE_PUBLISH_INTERVAL_SECONDS: ${AI_STATE_PUBLISH_INTERVAL_SECONDS:-10}
+      AI_RATE_LIMIT_CAPACITY: ${AI_RATE_LIMIT_CAPACITY:-5}
+      AI_RATE_LIMIT_REFILL_PER_SECOND: ${AI_RATE_LIMIT_REFILL_PER_SECOND:-1}
+      AI_QUANT_OVERRIDE_ENABLED: ${AI_QUANT_OVERRIDE_ENABLED:-false}
+    networks:
+      - backend
+      - data
+      - egress
+
+  trade-monitor:
+    <<: *service-defaults
+    command: ["python", "-m", "uvicorn", "services.trade_monitor.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  reconciliation:
+    <<: *service-defaults
+    command: ["sh", "-c", "alembic upgrade head && exec python -m uvicorn services.reconciliation.app.main:app --host 0.0.0.0 --port 8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      <<: *service-environment
+      MT5_ADAPTER_URL: ${MT5_ADAPTER_URL:-http://host.docker.internal:${MT5_ADAPTER_PORT:-8765}}
+      MT5_ADAPTER_TOKEN: ${MT5_ADAPTER_TOKEN:?Set MT5_ADAPTER_TOKEN in .env}
+      MT5_ADAPTER_TIMEOUT_SECONDS: ${MT5_ADAPTER_TIMEOUT_SECONDS:-10}
+      RECONCILIATION_INTERVAL_SECONDS: ${RECONCILIATION_INTERVAL_SECONDS:-15}
+      RECONCILIATION_API_TOKEN: ${RECONCILIATION_API_TOKEN:?Set RECONCILIATION_API_TOKEN in .env}
+      PAGERDUTY_ROUTING_KEY: ${PAGERDUTY_ROUTING_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    ports:
+      - "127.0.0.1:${RECONCILIATION_PORT:-8010}:8000"
+    networks:
+      - backend
+      - data
+      - egress
+
+  telegram-bot:
+    <<: *service-defaults
+    command: ["python", "-m", "uvicorn", "services.telegram_bot.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      reconciliation:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      <<: *service-environment
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TELEGRAM_NOTIFICATION_CHAT_IDS: ${TELEGRAM_NOTIFICATION_CHAT_IDS:-}
+      TELEGRAM_ALLOWED_USER_IDS: ${TELEGRAM_ALLOWED_USER_IDS:-}
+      TELEGRAM_DRAWDOWN_WARNING_PCT: ${TELEGRAM_DRAWDOWN_WARNING_PCT:-3.0}
+      TELEGRAM_STATUS_INTERVAL_SECONDS: ${TELEGRAM_STATUS_INTERVAL_SECONDS:-15}
+      RECONCILIATION_URL: http://reconciliation:8000
+      RECONCILIATION_API_TOKEN: ${RECONCILIATION_API_TOKEN:?Set RECONCILIATION_API_TOKEN in .env}
+      MT5_ADAPTER_URL: ${MT5_ADAPTER_URL:-http://host.docker.internal:${MT5_ADAPTER_PORT:-8765}}
+      MT5_ADAPTER_TOKEN: ${MT5_ADAPTER_TOKEN:?Set MT5_ADAPTER_TOKEN in .env}
+      MT5_ADAPTER_TIMEOUT_SECONDS: ${MT5_ADAPTER_TIMEOUT_SECONDS:-10}
+    networks:
+      - backend
+      - data
+      - egress
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks:
+      - backend
+      - observability
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?Set GRAFANA_ADMIN_USER in .env}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - observability
+
+  loki:
+    image: grafana/loki:3.4.2
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    volumes:
+      - ./config/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    ports:
+      - "127.0.0.1:${LOKI_PORT:-3100}:3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3100/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - observability
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:
+
+networks:
+  backend:
+    internal: true
+  data:
+    internal: true
+  observability:
+    internal: true
+  ingress:
+  egress:
