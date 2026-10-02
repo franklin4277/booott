@@ -36,7 +36,10 @@ function Read-DotEnvValue {
 Assert-Administrator
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $envFile = Join-Path $root ".env"
-$composeFile = Join-Path $root "docker-compose.prod.yml"
+$composeFile = Join-Path $root "docker-compose.yml"
+if (-not (Test-Path -LiteralPath $composeFile)) {
+    $composeFile = Join-Path $root "docker-compose.prod.yml"
+}
 $startupConfig = Join-Path $PSScriptRoot "mt5_startup.ini"
 $watchdogScript = Join-Path $PSScriptRoot "host_watchdog.py"
 $updateScript = Join-Path $PSScriptRoot "configure-windows-update.ps1"
@@ -96,15 +99,19 @@ if (-not $reconciliationToken -or $reconciliationToken.Length -lt 32 -or $reconc
 if ($adapterToken -ceq $reconciliationToken) {
     throw "MT5_ADAPTER_TOKEN and RECONCILIATION_API_TOKEN must be different secrets."
 }
-foreach ($setting in @("POSTGRES_PASSWORD", "REDIS_PASSWORD", "ORDER_SIGNING_SECRET", "GRAFANA_ADMIN_PASSWORD")) {
+foreach ($setting in @("POSTGRES_PASSWORD", "REDIS_PASSWORD", "GRAFANA_ADMIN_PASSWORD")) {
     $value = Read-DotEnvValue -Path $envFile -Name $setting
     if (-not $value -or $value -match "(?i)replace|change-me") {
         throw "$setting in .env must be replaced with a production value."
     }
 }
 $orderSigningSecret = Read-DotEnvValue -Path $envFile -Name "ORDER_SIGNING_SECRET"
-if ($orderSigningSecret.Length -lt 32) {
-    throw "ORDER_SIGNING_SECRET in .env must contain at least 32 characters."
+$secretKey = Read-DotEnvValue -Path $envFile -Name "SECRET_KEY"
+if (-not $orderSigningSecret -or $orderSigningSecret -match "(?i)replace|change-me") {
+    $orderSigningSecret = $secretKey
+}
+if (-not $orderSigningSecret -or $orderSigningSecret.Length -lt 32 -or $orderSigningSecret -match "(?i)replace|change-me") {
+    throw "ORDER_SIGNING_SECRET or SECRET_KEY in .env must contain at least 32 characters."
 }
 
 $adapterPort = Read-DotEnvValue -Path $envFile -Name "MT5_ADAPTER_PORT"
@@ -114,7 +121,7 @@ if (-not $adapterPort) {
 $watchdogPoll = Read-DotEnvValue -Path $envFile -Name "HOST_WATCHDOG_POLL_SECONDS"
 if (-not $watchdogPoll) { $watchdogPoll = "10" }
 $heartbeatTimeout = Read-DotEnvValue -Path $envFile -Name "MT5_WATCHDOG_HEARTBEAT_TIMEOUT_SECONDS"
-if (-not $heartbeatTimeout) { $heartbeatTimeout = "45" }
+if (-not $heartbeatTimeout) { $heartbeatTimeout = "15" }
 $startupGrace = Read-DotEnvValue -Path $envFile -Name "MT5_WATCHDOG_STARTUP_GRACE_SECONDS"
 if (-not $startupGrace) { $startupGrace = "120" }
 $restartGrace = Read-DotEnvValue -Path $envFile -Name "MT5_WATCHDOG_RESTART_GRACE_SECONDS"
@@ -141,7 +148,7 @@ $runAsProfile = Get-CimInstance Win32_UserProfile |
 if (-not $runAsProfile) {
     throw "The MT5 run-as account must have logged on once so Windows creates its user profile."
 }
-$heartbeatPath = Join-Path $runAsProfile.LocalPath "AppData\Roaming\MetaQuotes\Terminal\Common\Files\mt5_watchdog_heartbeat.txt"
+$heartbeatPath = Join-Path $runAsProfile.LocalPath "AppData\Roaming\MetaQuotes\Terminal\Common\Files\equity_guard_heartbeat.dat"
 
 $dockerService = Get-Service -Name $DockerServiceName -ErrorAction Stop
 Set-Service -Name $DockerServiceName -StartupType Automatic

@@ -17,7 +17,8 @@ containerized trading platform.
 │   ├── Include/
 │   └── README.md
 ├── scripts/
-│   └── dev/
+│   ├── dev/
+│   └── mt5_host_adapter.py
 ├── schemas/
 ├── event_bus/
 ├── utils/
@@ -30,6 +31,7 @@ containerized trading platform.
 │   ├── pattern_engine/app/
 │   ├── ai_engine/app/
 │   ├── reconciliation/app/
+│   ├── execution_engine/app/
 │   ├── telegram_bot/app/
 │   └── trade_monitor/app/
 ├── database/
@@ -46,8 +48,10 @@ containerized trading platform.
 Every Python service exposes `/health` and `/metrics`. `market-data` implements
 tick/bar ingress, TimescaleDB persistence, and rolling indicators;
 `pattern-engine` implements a configurable multi-timeframe candidate strategy.
-Broker order routing, account-specific execution controls, historical data
-backfill, and production strategy validation remain outside this scaffold.
+The Windows MT5 host adapter publishes live ticks and closed-bar history,
+serves broker state for reconciliation, and accepts signed order approvals.
+Execution remains fail-closed by default; validate broker execution and
+strategy suitability on a demo account before any live use.
 
 `market-data` accepts JSON tick/bar messages through Redis or ZeroMQ PULL
 sockets, persists them to TimescaleDB, and computes rolling indicators.
@@ -197,14 +201,42 @@ retention and recovery requirements.
 Both compose files require a local `.env`; Compose does not load `.env.example`
 automatically. Do not commit `.env` or use the example credentials in production.
 
+## End-to-end execution safety
+
+The normal path is MT5 market data → market/pattern services → optional AI →
+Risk Engine → `orders.approved` → execution engine → Windows MT5 adapter →
+`execution.reports` → ledger/reconciliation. Reconciliation publishes the
+account's daily-equity baseline and open-position risk to `risk.portfolio`;
+missing or unknown position risk is treated conservatively. Pattern signals
+are based only on the most recently closed candle, and approved orders expire
+after five seconds. Configure a working economic-calendar API before expecting
+the Risk Engine to approve orders.
+
+The Windows adapter polls the configured `MT5_MARKET_SYMBOLS` and
+`MT5_MARKET_TIMEFRAMES`, then sends ticks and closed bars to the authenticated
+market-data ingest endpoint. `MT5_MARKET_DATA_ENABLED` controls publishing;
+history is periodically reloaded to repopulate indicators after service
+restarts. Confirm broker-specific symbol names and keep the adapter and
+terminal running on the Windows host.
+
+Paper trading is enabled by default and does not contact the broker. Keep
+`FEATURE_PAPER_TRADING=true` and `MT5_LIVE_TRADING_ENABLED=false` until the
+data, reconciliation, calendar, kill-switch, and alerting path has been
+verified on a demo account. Broker routing requires explicitly disabling paper
+trading in the container and enabling live trading in both the container and
+Windows host. The project does not certify any strategy or guarantee
+profitability. Redis Pub/Sub is best-effort; use a durable broker before
+relying on it for production order delivery.
+
 ## Notes
 
 - PostgreSQL uses the TimescaleDB image and enables the extension during initial
   database initialization. For an existing database, enable it manually with
   `CREATE EXTENSION IF NOT EXISTS timescaledb;`.
 - `services/common` provides shared liveness and Prometheus metrics endpoints.
-- Prometheus discovers the seven API services by static Docker DNS targets.
+- Prometheus discovers the API, market, risk, reconciliation, execution, and
+  Telegram services by static Docker DNS targets.
 - Loki is provisioned as a log store; add/configure a log shipper before
   expecting container logs to appear in Grafana.
-- The ZMQ ports are published for the future Market Engine adapter. This
-  baseline HTTP service does not yet bind ZMQ sockets.
+- The market-data ZMQ ports remain available for compatible MT5 integrations;
+  the Windows host adapter uses authenticated HTTP ingress by default.

@@ -260,7 +260,8 @@ class RedisEventBus:
                         ) from exc
 
                     reconnect_attempt = 0
-                    yield event
+                    with trace_id_context(event.trace_id):
+                        yield event
             except RedisError:
                 if self._closed:
                     return

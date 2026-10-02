@@ -9,7 +9,12 @@ from uuid import uuid4
 
 from database.repository import LedgerRepository
 from event_bus.redis_bus import RedisEventBus
-from services.reconciliation.app.models import ReconciliationReport, SafeModeState
+from schemas.messages import AccountState, TradeSide
+from services.reconciliation.app.models import (
+    ReconciliationReport,
+    SafeModeState,
+)
+from services.risk_engine.app.models import PortfolioSnapshot, PositionExposure
 from services.reconciliation.app.mt5_client import (
     MT5AdapterClient,
     MT5AdapterUnavailable,
@@ -184,6 +189,15 @@ class ReconciliationEngine:
             else:
                 next_state = proposed_state
             self.state = next_state
+            try:
+                await self._publish_portfolio_snapshot(snapshot)
+            except Exception:
+                await self._enter_safe_mode(
+                    "Current account and portfolio risk state could not be published; trading remains fail-closed.",
+                    manual_clear_required=False,
+                    alert=True,
+                )
+                raise
             if previous_safe_mode != self.state.enabled or outcome.unknown_positions:
                 await self._publish_safe_mode(
                     self.state,
@@ -254,6 +268,50 @@ class ReconciliationEngine:
                 report.closed_trades_reconciled,
             )
             return report
+
+    async def _publish_portfolio_snapshot(self, snapshot) -> None:
+        starting_equity = await self.repository.get_daily_starting_equity(
+            snapshot.account.login
+        )
+        if starting_equity is None or starting_equity <= 0:
+            raise RuntimeError(
+                "The reconciled account has no positive daily equity baseline."
+            )
+        account = AccountState(
+            account_id=snapshot.account.login,
+            currency=snapshot.account.currency,
+            balance=snapshot.account.balance,
+            equity=snapshot.account.equity,
+            margin=snapshot.account.margin,
+            free_margin=snapshot.account.free_margin,
+            open_positions=len(snapshot.positions),
+            timestamp=snapshot.account.timestamp,
+        )
+        positions = [
+            PositionExposure(
+                position_id=str(position.identifier),
+                source_order_id=position.client_order_id,
+                symbol=position.symbol,
+                side=TradeSide(position.side),
+                risk_amount=(
+                    position.risk_amount
+                    if position.risk_amount is not None
+                    else snapshot.account.equity
+                ),
+            )
+            for position in snapshot.positions
+        ]
+        portfolio = PortfolioSnapshot(
+            account=account,
+            daily_starting_equity=starting_equity,
+            positions=positions,
+        )
+        await self.bus.publish(
+            "risk.portfolio",
+            portfolio,
+            trace_id=uuid4().hex,
+            event_type="PortfolioSnapshot",
+        )
 
     async def clear_safe_mode(self) -> SafeModeState:
         async with self._lock:

@@ -38,11 +38,21 @@ port 8765 with Windows Firewall to the Docker host/network and use a unique
 32-byte-or-longer bearer token. Compose defaults the URL to
 `http://host.docker.internal:8765`.
 
-The bridge reads MT5's actual position/order/deal state; it does not initiate
-or close trades. Position correlation uses the MT5 position identifier, MT5
-ticket, broker order ticket, or the order UUID if the execution adapter
-preserves that UUID in the MT5 order comment. Unknown positions are never
-adopted into the ledger automatically.
+The bridge reads MT5's actual position/order/deal state and accepts only
+unexpired, HMAC-signed market orders at `POST /v1/orders`. Broker routing is
+disabled unless `MT5_LIVE_TRADING_ENABLED=true` on the Windows host and the
+container execution worker has both `FEATURE_PAPER_TRADING=false` and
+`MT5_LIVE_TRADING_ENABLED=true`. Before enabling these settings, validate the
+complete execution path on a demo account. The adapter records a pending
+submission before calling the broker; ambiguous submissions are not retried
+automatically and must be resolved through reconciliation.
+
+The same host adapter can publish ticks and closed bars to the authenticated
+market-data ingestion endpoints. Configure `MT5_MARKET_SYMBOLS`,
+`MT5_MARKET_TIMEFRAMES`, and `MT5_MARKET_DATA_ENABLED` in `.env`. Position
+correlation uses the MT5 position identifier, MT5 ticket, broker order ticket,
+or client order UUID. Unknown positions are never adopted into the ledger
+automatically.
 
 ## Reconciliation and safe mode
 

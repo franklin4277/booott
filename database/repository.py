@@ -299,6 +299,15 @@ class LedgerRepository:
             )
             return result.scalar_one_or_none()
 
+    async def get_daily_starting_equity(self, account_id: str) -> Decimal | None:
+        async with self.sessions() as session:
+            result = await session.execute(
+                select(Account.daily_starting_equity).where(
+                    Account.account_id == account_id
+                )
+            )
+            return result.scalar_one_or_none()
+
     async def _reconcile_positions(
         self, session, snapshot: MT5Snapshot
     ) -> tuple[list[MT5Position], list[int], int]:

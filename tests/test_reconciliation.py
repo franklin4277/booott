@@ -59,6 +59,9 @@ class FakeRepository:
     async def oldest_open_trade_time(self):
         return None
 
+    async def get_daily_starting_equity(self, account_id):
+        return Decimal("10000")
+
     async def apply_snapshot(self, snapshot, *, proposed_safe_mode, reconciled_at):
         self.state = proposed_safe_mode
         if self.outcome.unknown_positions:
@@ -169,6 +172,7 @@ class ReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(report.safe_mode)
         self.assertFalse(self.engine.state.enabled)
         self.assertFalse(self.repository.state["enabled"])
+        self.assertIn("risk.portfolio", [event[0] for event in self.bus.events])
 
     async def test_initialize_restores_persisted_safe_mode_state(self):
         self.repository.state = SafeModeState(

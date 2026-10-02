@@ -25,6 +25,12 @@ foreach ($line in Get-Content -LiteralPath $envFile) {
 if (-not $env:MT5_ADAPTER_TOKEN -or $env:MT5_ADAPTER_TOKEN.Length -lt 32) {
     throw "MT5_ADAPTER_TOKEN in .env must contain at least 32 characters."
 }
+if (-not $env:ORDER_SIGNING_SECRET -or $env:ORDER_SIGNING_SECRET.Length -lt 32) {
+    $env:ORDER_SIGNING_SECRET = $env:SECRET_KEY
+}
+if (-not $env:ORDER_SIGNING_SECRET -or $env:ORDER_SIGNING_SECRET.Length -lt 32) {
+    throw "Set ORDER_SIGNING_SECRET (or SECRET_KEY) to 32+ characters in .env."
+}
 if (-not $PythonPath) {
     $PythonPath = (& py -3 -c "import sys; print(sys.executable)" | Select-Object -First 1)
 }

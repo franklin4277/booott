@@ -55,6 +55,7 @@ class RiskLimits:
     news_embargo_minutes: int
     correlation_threshold: Decimal
     correlation_matrix: dict[frozenset[str], Decimal]
+    min_ai_confidence: Decimal = Decimal("0.65")
 
     @classmethod
     def from_environment(cls) -> "RiskLimits":
@@ -111,6 +112,9 @@ class RiskLimits:
                     os.environ.get("RISK_CORRELATION_THRESHOLD", "0.7")
                 ),
                 correlation_matrix=correlations,
+                min_ai_confidence=Decimal(
+                    os.environ.get("RISK_MIN_AI_CONFIDENCE", "0.65")
+                ),
             )
             limits.validate()
             return limits
@@ -133,6 +137,8 @@ class RiskLimits:
             or self.news_embargo_minutes < 1
             or self.correlation_threshold < 0
             or self.correlation_threshold > 1
+            or self.min_ai_confidence < 0
+            or self.min_ai_confidence > 1
         ):
             raise ValueError("risk limits are invalid; order TTL must be exactly 5 seconds")
 
@@ -152,9 +158,13 @@ class RiskEngine:
         self.limits = limits or RiskLimits.from_environment()
         self.limits.validate()
         self.signing_secret = signing_secret
-        configured_secret = signing_secret or os.environ.get("ORDER_SIGNING_SECRET")
+        configured_secret = signing_secret or os.environ.get(
+            "ORDER_SIGNING_SECRET"
+        ) or os.environ.get("SECRET_KEY")
         if configured_secret is None or len(configured_secret.encode("utf-8")) < 32:
-            raise ValueError("ORDER_SIGNING_SECRET must contain at least 32 bytes")
+            raise ValueError(
+                "ORDER_SIGNING_SECRET or SECRET_KEY must contain at least 32 bytes"
+            )
         self.signing_secret = configured_secret
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.portfolio: PortfolioSnapshot | None = None
@@ -350,6 +360,18 @@ class RiskEngine:
                     signal,
                     RiskRejectionCode.AI_NO_TRADE,
                     "AI analysis decision is NO_TRADE.",
+                    trace_id,
+                )
+                return
+            if ai_result.confidence_score < self.limits.min_ai_confidence:
+                await self._reject(
+                    signal,
+                    RiskRejectionCode.AI_CONFIDENCE_TOO_LOW,
+                    (
+                        "AI confidence "
+                        f"{ai_result.confidence_score} is below "
+                        f"{self.limits.min_ai_confidence}."
+                    ),
                     trace_id,
                 )
                 return

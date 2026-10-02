@@ -29,6 +29,9 @@ class MT5Position(StrictModel):
     profit: Decimal = Field(allow_inf_nan=False)
     swap: Decimal = Field(allow_inf_nan=False)
     opened_at: AwareDatetime
+    risk_amount: Decimal | None = Field(
+        default=None, ge=Decimal(0), allow_inf_nan=False
+    )
 
 
 class MT5PendingOrder(StrictModel):

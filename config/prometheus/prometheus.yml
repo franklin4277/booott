@@ -27,6 +27,9 @@ scrape_configs:
   - job_name: reconciliation
     static_configs:
       - targets: ["reconciliation:8000"]
+  - job_name: execution-engine
+    static_configs:
+      - targets: ["execution-engine:8000"]
   - job_name: telegram-bot
     static_configs:
       - targets: ["telegram-bot:8000"]

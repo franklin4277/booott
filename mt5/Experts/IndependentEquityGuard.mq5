@@ -1,13 +1,16 @@
 #property strict
-#property version   "1.00"
+#property version   "1.10"
 #property description "Standalone account equity and daily drawdown emergency guard"
 
 #include <Trade/Trade.mqh>
 
+input double InpMaxDailyLossPercent = 5.0;
+input double InpHardEquityFloor = 500.0;
 input string InpConfigFile = "equity_guard_config.json";
 input string InpCrashLogFile = "equity_guard_crash.log";
-input string InpWatchdogHeartbeatFile = "mt5_watchdog_heartbeat.txt";
-input int    InpRetryIntervalSeconds = 1;
+input string InpWatchdogHeartbeatFile = "equity_guard_heartbeat.dat";
+input string InpTradingLockFile = "trading_state.lock";
+input int    InpHeartbeatSeconds = 1;
 
 CTrade trade;
 
@@ -32,7 +35,23 @@ void WriteWatchdogHeartbeat()
       return;
    }
 
-   FileWrite(handle, TimeToString(TimeGMT(), TIME_DATE | TIME_SECONDS));
+   FileWriteString(handle, IntegerToString((int)TimeGMT()));
+   FileFlush(handle);
+   FileClose(handle);
+}
+
+void WriteTradingLock(const string state)
+{
+   int handle = FileOpen(InpTradingLockFile,
+                         FILE_WRITE | FILE_TXT | FILE_ANSI |
+                         FILE_COMMON | FILE_SHARE_READ);
+   if(handle == INVALID_HANDLE)
+   {
+      PrintFormat("CRITICAL: Cannot write trading lock %s (error %d).",
+                  InpTradingLockFile, GetLastError());
+      return;
+   }
+   FileWriteString(handle, state);
    FileFlush(handle);
    FileClose(handle);
 }
@@ -82,30 +101,36 @@ bool ReadNumber(const string json, const string key, double &value)
 
 bool LoadConfiguration()
 {
+   g_equity_floor = InpHardEquityFloor;
+   g_max_daily_drawdown_pct = InpMaxDailyLossPercent;
+
    int handle = FileOpen(InpConfigFile, FILE_READ | FILE_BIN | FILE_SHARE_READ);
-   if(handle == INVALID_HANDLE)
+   if(handle != INVALID_HANDLE)
    {
-      PrintFormat("ERROR: Cannot open %s in MQL5/Files (error %d).",
-                  InpConfigFile, GetLastError());
-      return false;
-   }
-
-   string json = FileReadString(handle, (int)FileSize(handle));
-   FileClose(handle);
-
-   if(!ReadNumber(json, "absolute_equity_floor", g_equity_floor) ||
-      !ReadNumber(json, "max_daily_drawdown_percent", g_max_daily_drawdown_pct))
-   {
-      PrintFormat("ERROR: %s must contain numeric absolute_equity_floor and max_daily_drawdown_percent values.",
-                  InpConfigFile);
-      return false;
+      string json = FileReadString(handle, (int)FileSize(handle));
+      FileClose(handle);
+      double floor_from_file = 0.0;
+      double dd_from_file = 0.0;
+      if(ReadNumber(json, "absolute_equity_floor", floor_from_file))
+         g_equity_floor = floor_from_file;
+      if(ReadNumber(json, "max_daily_drawdown_percent", dd_from_file) ||
+         ReadNumber(json, "MaxDailyLossPercent", dd_from_file) ||
+         ReadNumber(json, "HardEquityFloor", floor_from_file))
+      {
+         if(ReadNumber(json, "max_daily_drawdown_percent", dd_from_file) ||
+            ReadNumber(json, "MaxDailyLossPercent", dd_from_file))
+            g_max_daily_drawdown_pct = dd_from_file;
+         if(ReadNumber(json, "HardEquityFloor", floor_from_file) ||
+            ReadNumber(json, "absolute_equity_floor", floor_from_file))
+            g_equity_floor = floor_from_file;
+      }
    }
 
    if(g_equity_floor <= 0.0 ||
       g_max_daily_drawdown_pct <= 0.0 ||
       g_max_daily_drawdown_pct > 100.0)
    {
-      Print("ERROR: equity floor must be positive and daily drawdown percent must be in (0, 100].");
+      Print("ERROR: HardEquityFloor must be positive and MaxDailyLossPercent must be in (0, 100].");
       return false;
    }
 
@@ -137,7 +162,7 @@ void InitializeDailyBaseline()
       GlobalVariableSet(variable_name, g_day_start_equity);
    }
 
-   PrintFormat("Daily equity baseline: %.2f; absolute floor: %.2f; max daily drawdown: %.2f%%.",
+   PrintFormat("Daily equity baseline: %.2f; HardEquityFloor: %.2f; MaxDailyLossPercent: %.2f%%.",
                g_day_start_equity, g_equity_floor, g_max_daily_drawdown_pct);
 }
 
@@ -176,17 +201,32 @@ void AppendCrashLog(const string message)
    FileClose(handle);
 }
 
+void DisableAlgorithmicTrading()
+{
+   WriteTradingLock("EMERGENCY_FLAT");
+   if(!(bool)TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) ||
+      !(bool)MQLInfoInteger(MQL_TRADE_ALLOWED) ||
+      !(bool)AccountInfoInteger(ACCOUNT_TRADE_EXPERT))
+   {
+      AppendCrashLog("Algorithmic trading already disabled by terminal, EA, or account settings.");
+      return;
+   }
+   AppendCrashLog(
+      "EMERGENCY_FLAT lock written. Disable the terminal AutoTrading button immediately; MQL5 has no official API to toggle it.");
+}
+
 void TriggerGuard(const string reason, const double equity)
 {
    if(!g_triggered)
    {
       g_triggered = true;
       string message = StringFormat(
-         "EQUITY GUARD TRIGGERED: %s Current equity: %.2f. Terminal-wide Algo Trading must be disabled manually; MQL5 provides no API for an EA to toggle that control.",
+         "EQUITY GUARD TRIGGERED: %s Current equity: %.2f. All positions will be flattened and new algorithmic orders are locked.",
          reason, equity);
       AppendCrashLog(message);
       Print(message);
       Alert(message);
+      DisableAlgorithmicTrading();
 
       if(!g_alarm_played)
       {
@@ -297,10 +337,10 @@ void CheckEquity()
                         (1.0 - g_max_daily_drawdown_pct / 100.0);
 
    if(equity < g_equity_floor)
-      TriggerGuard(StringFormat("equity %.2f fell below absolute floor %.2f",
+      TriggerGuard(StringFormat("equity %.2f fell below HardEquityFloor %.2f",
                                 equity, g_equity_floor), equity);
    else if(equity < daily_floor)
-      TriggerGuard(StringFormat("equity %.2f fell below daily drawdown threshold %.2f",
+      TriggerGuard(StringFormat("equity %.2f fell below MaxDailyLossPercent threshold %.2f",
                                 equity, daily_floor), equity);
 
    if(g_triggered)
@@ -319,13 +359,13 @@ int OnInit()
    trade.SetExpertMagicNumber(0);
    InitializeDailyBaseline();
 
-   int timer_seconds = InpRetryIntervalSeconds;
+   int timer_seconds = InpHeartbeatSeconds;
    if(timer_seconds < 1)
       timer_seconds = 1;
    EventSetTimer(timer_seconds);
    WriteWatchdogHeartbeat();
 
-   Print("IndependentEquityGuard active. Attach it to a dedicated chart.");
+   Print("IndependentEquityGuard active. Attach it to a dedicated clean chart.");
    return INIT_SUCCEEDED;
 }
 

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
@@ -12,6 +13,14 @@ from services.pattern_engine.app.engine import PatternEngine
 logger = logging.getLogger(__name__)
 BAR_CHANNEL = "market.bars"
 SIGNAL_CHANNEL = "signals.pattern"
+BASE_TIMEFRAME_MINUTES = {
+    "M1": 1,
+    "M5": 5,
+    "M15": 15,
+    "M30": 30,
+    "H1": 60,
+    "H4": 240,
+}
 
 
 class PatternConsumer:
@@ -44,6 +53,25 @@ class PatternConsumer:
 
         signal = self.engine.on_bar(bar)
         if signal is None:
+            return
+        timeframe_minutes = BASE_TIMEFRAME_MINUTES.get(bar.timeframe)
+        if timeframe_minutes is None:
+            logger.error(
+                "Pattern engine produced a signal for unsupported timeframe %s",
+                bar.timeframe,
+            )
+            return
+        bar_age_seconds = (
+            datetime.now(timezone.utc) - bar.timestamp.astimezone(timezone.utc)
+        ).total_seconds()
+        bar_close_age_seconds = bar_age_seconds - timeframe_minutes * 60
+        if bar_close_age_seconds < -5 or bar_close_age_seconds > 60:
+            logger.info(
+                "Skipping stale pattern signal symbol=%s timeframe=%s close_age_seconds=%.1f",
+                bar.symbol,
+                bar.timeframe,
+                bar_close_age_seconds,
+            )
             return
 
         signal = signal.model_copy(update={"trace_id": event.trace_id})

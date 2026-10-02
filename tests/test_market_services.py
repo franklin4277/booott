@@ -203,7 +203,7 @@ class PatternConsumerTests(unittest.IsolatedAsyncioTestCase):
             atr_expansion_ratio=Decimal("1.2"),
         )
         engine = PatternEngine(config)
-        start = datetime(2026, 1, 15, 15, tzinfo=timezone.utc)
+        start = datetime.now(timezone.utc) - timedelta(minutes=30)
         engine.record_spread_ratio("EURUSD", Decimal("1.1"))
         engine.on_bar(
             make_bar(start, timeframe="M15", open_price="99.9", close="100.0")
@@ -254,7 +254,6 @@ class PatternConsumerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(signal, PatternSetupSignal)
         self.assertEqual(signal.trace_id, "incoming-trace")
         self.assertEqual(options["event_type"], "PatternSetupSignal")
-
 
 class MarketDataConsumerTests(unittest.IsolatedAsyncioTestCase):
     async def test_persists_direct_ingress_and_emits_indicators_and_normalized_event(self) -> None:

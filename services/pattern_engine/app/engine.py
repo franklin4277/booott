@@ -1,7 +1,7 @@
 import os
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -154,6 +154,7 @@ class PatternEngine:
             + min(volatility_ratio - Decimal("1"), Decimal("1")) * Decimal("0.2")
             + Decimal("0.1") * len(evidence),
         )
+        created_at = datetime.now(timezone.utc)
         return PatternSetupSignal(
             strategy_id="multi-timeframe-pattern-v1",
             symbol=bar.symbol,
@@ -163,8 +164,8 @@ class PatternEngine:
             stop_loss=stop,
             take_profit=target,
             confidence=confidence,
-            created_at=bar.timestamp,
-            expires_at=bar.timestamp
+            created_at=created_at,
+            expires_at=created_at
             + timedelta(minutes=self.config.signal_validity_minutes),
             attributes={
                 "evidence": evidence,

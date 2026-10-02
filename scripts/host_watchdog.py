@@ -145,7 +145,7 @@ class HostWatchdog:
         project_directory: Path,
         compose_file: Path,
         poll_seconds: float = 10,
-        heartbeat_timeout_seconds: float = 45,
+        heartbeat_timeout_seconds: float = 15,
         startup_grace_seconds: float = 120,
         restart_grace_seconds: float = 20,
         compose_cooldown_seconds: float = 60,
@@ -406,11 +406,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--compose-file",
         type=Path,
-        default=Path("docker-compose.prod.yml"),
+        default=Path("docker-compose.yml"),
     )
     parser.add_argument("--poll-seconds", type=float, default=10)
     parser.add_argument("--initial-delay-seconds", type=float, default=30)
-    parser.add_argument("--heartbeat-timeout-seconds", type=float, default=45)
+    parser.add_argument("--heartbeat-timeout-seconds", type=float, default=15)
     parser.add_argument("--startup-grace-seconds", type=float, default=120)
     parser.add_argument("--restart-grace-seconds", type=float, default=20)
     parser.add_argument("--compose-cooldown-seconds", type=float, default=60)
@@ -447,7 +447,7 @@ def main() -> None:
             / "Common"
             / "Files"
         )
-        heartbeat_path = common_files / "mt5_watchdog_heartbeat.txt"
+        heartbeat_path = common_files / "equity_guard_heartbeat.dat"
     if not heartbeat_path.is_absolute():
         heartbeat_path = heartbeat_path.resolve()
     compose_file = args.compose_file
