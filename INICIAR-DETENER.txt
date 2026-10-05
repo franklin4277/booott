@@ -21,5 +21,8 @@ STOP
 Set-Location 'C:\Users\frank\bottttt\booott'
 powershell -ExecutionPolicy Bypass -File .\scripts\stop-all.ps1
 
+The stop command shuts down the platform services and confirms when they have
+stopped. Run it again safely if the services are already stopped.
+
 Stopping the services does not close or change positions already open in MT5.
 Manage existing positions in the MT5 terminal.
