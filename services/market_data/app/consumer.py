@@ -4,7 +4,7 @@ import logging
 import os
 from collections import deque
 from collections.abc import Awaitable, Callable, Hashable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
@@ -219,7 +219,7 @@ class MarketDataConsumer:
                 try:
                     payload: Any = json.loads(raw.decode("utf-8"))
                     if not isinstance(payload, dict):
-                        raise ValueError("ZMQ message must be a JSON object")
+                        raise TypeError("ZMQ message must be a JSON object")
                     trace_id = payload.pop("trace_id", None)
                     if expected_type == "tick":
                         tick = TickData.model_validate(payload)
@@ -227,7 +227,7 @@ class MarketDataConsumer:
                             max(
                                 0.0,
                                 (
-                                    datetime.now(timezone.utc) - tick.timestamp
+                                    datetime.now(UTC) - tick.timestamp
                                 ).total_seconds(),
                             )
                         )
@@ -243,7 +243,7 @@ class MarketDataConsumer:
                             max(
                                 0.0,
                                 (
-                                    datetime.now(timezone.utc) - bar.timestamp
+                                    datetime.now(UTC) - bar.timestamp
                                 ).total_seconds(),
                             )
                         )

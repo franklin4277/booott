@@ -4,9 +4,10 @@ import json
 import logging
 import os
 import random
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import contextmanager
-from typing import Any, Iterator
+from types import TracebackType
+from typing import Any, Self
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -15,6 +16,16 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
 from schemas.events import EventEnvelope
+
+logger = logging.getLogger(__name__)
+
+try:
+    import fakeredis  # type: ignore[import-untyped]
+
+    _FAKE_REDIS_AVAILABLE = True
+except ImportError:
+    _FAKE_REDIS_AVAILABLE = False
+    fakeredis = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 _current_trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -74,8 +85,20 @@ class RedisEventBus:
         return f"redis://{host}:{port}/0"
 
     def _make_client(self) -> Redis:
+        url = self._redis_url
+        use_fakeredis = os.environ.get("REDIS_USE_FAKEREDIS", "false").lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if use_fakeredis and _FAKE_REDIS_AVAILABLE:
+            logger.debug("Using fakeredis for local URL %s", url)
+            return fakeredis.FakeAsyncRedis.from_url(  # type: ignore[union-attr]
+                url,
+                decode_responses=True,
+            )
         return Redis.from_url(
-            self._redis_url,
+            url,
             decode_responses=True,
             health_check_interval=30,
             socket_connect_timeout=5,
@@ -282,10 +305,15 @@ class RedisEventBus:
         self._closed = True
         await self._reset_client()
 
-    async def __aenter__(self) -> "RedisEventBus":
+    async def __aenter__(self) -> Self:
         if self._closed:
             raise RedisEventBusError("RedisEventBus is closed")
         return self
 
-    async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         await self.aclose()

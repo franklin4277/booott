@@ -1,9 +1,9 @@
 import asyncio
 import logging
 
+from database.repository import LedgerRepository
 from event_bus.redis_bus import RedisEventBus
 from schemas.events import EventEnvelope
-from database.repository import LedgerRepository
 
 logger = logging.getLogger(__name__)
 LEDGER_CHANNELS = (

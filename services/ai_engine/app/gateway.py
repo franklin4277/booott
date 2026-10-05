@@ -2,14 +2,15 @@ import asyncio
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Callable
 from uuid import uuid4
 
-from event_bus.redis_bus import RedisEventBus
 from prometheus_client import Counter, Gauge, Histogram
-from schemas.messages import AIAnalysisResult, AIRecommendation, PatternSetupSignal
+
+from event_bus.redis_bus import RedisEventBus
+from schemas.messages import AIAnalysisResult, AIRecommendation
 from services.ai_engine.app.circuit_breaker import (
     CircuitBreaker,
     CircuitOpenError,
@@ -21,7 +22,11 @@ from services.ai_engine.app.models import (
     AIAvailability,
     AIStateMessage,
 )
-from services.ai_engine.app.provider import AIProvider, InstructorProvider
+from services.ai_engine.app.provider import (
+    AIProvider,
+    InstructorProvider,
+    UnavailableProvider,
+)
 from services.ai_engine.app.rate_limiter import TokenBucketRateLimiter
 
 logger = logging.getLogger(__name__)
@@ -74,11 +79,17 @@ class AIGateway:
             else os.environ.get("AI_QUANT_OVERRIDE_ENABLED", "false").lower()
             in {"1", "true", "yes"}
         )
-        self.provider = provider or InstructorProvider(
-            provider=self.provider_name,
-            model=self.model,
-            timeout_seconds=self.request_timeout_seconds,
-        )
+        if provider is not None:
+            self.provider = provider
+        else:
+            try:
+                self.provider = InstructorProvider(
+                    provider=self.provider_name,
+                    model=self.model,
+                    timeout_seconds=self.request_timeout_seconds,
+                )
+            except ValueError as exc:
+                self.provider = UnavailableProvider(str(exc))
         self.rate_limiter = rate_limiter or TokenBucketRateLimiter(
             capacity=rate_limit_capacity
             if rate_limit_capacity is not None
@@ -168,13 +179,13 @@ class AIGateway:
                 "Deterministic quantitative override used while AI is offline. "
                 + request.quantitative_override_reasoning
             )
-            risk_multiplier = Decimal("1") if decision != AIRecommendation.NO_TRADE else Decimal("0")
+            risk_multiplier = Decimal(1) if decision != AIRecommendation.NO_TRADE else Decimal(0)
             invalidated_by = ["The deterministic override's configured quantitative conditions no longer hold."]
         else:
             decision = AIRecommendation.NO_TRADE
-            confidence = Decimal("0")
+            confidence = Decimal(0)
             reasoning = f"AI analysis unavailable; fail-safe NO_TRADE applied. {reason}"
-            risk_multiplier = Decimal("0")
+            risk_multiplier = Decimal(0)
             invalidated_by = ["A successful, schema-valid AI analysis becomes available."]
 
         return AIAnalysisResult(
@@ -186,7 +197,7 @@ class AIGateway:
             risk_multiplier=risk_multiplier,
             reasoning=reasoning,
             invalidated_by=invalidated_by,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             trace_id=signal.trace_id,
         )
 
@@ -235,7 +246,7 @@ class AIGateway:
                 }
             )
             if result.decision == AIRecommendation.NO_TRADE:
-                result = result.model_copy(update={"risk_multiplier": Decimal("0")})
+                result = result.model_copy(update={"risk_multiplier": Decimal(0)})
             await self.breaker.record_success()
             AI_REQUEST_LATENCY.labels(
                 provider=self.provider_name, outcome="success"

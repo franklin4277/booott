@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from hmac import compare_digest
 from typing import Any
 from uuid import uuid4
@@ -14,12 +14,12 @@ from services.reconciliation.app.models import (
     ReconciliationReport,
     SafeModeState,
 )
-from services.risk_engine.app.models import PortfolioSnapshot, PositionExposure
 from services.reconciliation.app.mt5_client import (
     MT5AdapterClient,
     MT5AdapterUnavailable,
 )
 from services.reconciliation.app.notifier import CriticalNotifier
+from services.risk_engine.app.models import PortfolioSnapshot, PositionExposure
 
 logger = logging.getLogger(__name__)
 SAFE_MODE_KEY = "system:safe_mode"
@@ -55,7 +55,7 @@ class ReconciliationEngine:
             enabled=True,
             reason="Initial MT5 reconciliation is pending.",
             manual_clear_required=False,
-            updated_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(UTC),
         )
         self.last_reconciliation: ReconciliationReport | None = None
         self.last_snapshot_at: datetime | None = None
@@ -92,7 +92,7 @@ class ReconciliationEngine:
                     "enabled": True,
                     "reason": "Initial MT5 reconciliation is pending.",
                     "manual_clear_required": False,
-                    "updated_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(UTC),
                 }
             )
             await self.repository.update_safe_mode(
@@ -126,7 +126,7 @@ class ReconciliationEngine:
             ):
                 since = oldest_opened_at
             if since is None:
-                since = datetime.now(timezone.utc) - timedelta(days=30)
+                since = datetime.now(UTC) - timedelta(days=30)
             try:
                 snapshot = await self.mt5.get_snapshot(since)
             except MT5AdapterUnavailable:
@@ -136,7 +136,7 @@ class ReconciliationEngine:
                     alert=True,
                 )
                 raise
-            reconciled_at = datetime.now(timezone.utc)
+            reconciled_at = datetime.now(UTC)
             proposed_state = self.state.model_copy(
                 update={
                     "enabled": False,
@@ -316,7 +316,7 @@ class ReconciliationEngine:
     async def clear_safe_mode(self) -> SafeModeState:
         async with self._lock:
             if self._last_success_at is None or (
-                datetime.now(timezone.utc) - self._last_success_at
+                datetime.now(UTC) - self._last_success_at
             ).total_seconds() > self.poll_seconds * 2:
                 raise RuntimeError(
                     "Cannot clear SAFE_MODE without a recent successful reconciliation."
@@ -333,7 +333,7 @@ class ReconciliationEngine:
                 enabled=False,
                 reason=None,
                 manual_clear_required=False,
-                updated_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(UTC),
             )
             await self.repository.update_safe_mode(
                 self.state.model_dump(mode="json"), self.state.updated_at
@@ -347,7 +347,7 @@ class ReconciliationEngine:
         if not reason.strip():
             raise ValueError("SAFE_MODE activation reason must not be empty")
         async with self._lock:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             self.state = SafeModeState(
                 enabled=True,
                 reason=reason.strip()[:1000],
@@ -394,7 +394,7 @@ class ReconciliationEngine:
         alert: bool,
     ) -> None:
         previous = self.state
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         self._last_reconciliation_failed = True
         self.state = SafeModeState(
             enabled=True,

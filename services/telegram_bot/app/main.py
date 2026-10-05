@@ -3,7 +3,7 @@ import logging
 import os
 import shlex
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -103,7 +103,7 @@ class TelegramControlBot:
         )
         self.reconciliation_url = (
             reconciliation_url
-            or os.environ.get("RECONCILIATION_URL", "http://reconciliation:8000")
+            or os.environ.get("RECONCILIATION_URL", "http://localhost:8010")
         ).rstrip("/")
         self.reconciliation_token = (
             reconciliation_token
@@ -230,7 +230,7 @@ class TelegramControlBot:
             await self.send_message(chat_id, text)
 
     async def _set_kill_switch(self, mode: str, actor_id: int) -> dict[str, Any]:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         state = {
             "mode": mode,
             "enabled": mode != "RUNNING",
@@ -241,7 +241,7 @@ class TelegramControlBot:
         await self.bus.publish(
             KILL_SWITCH_CHANNEL,
             state,
-            trace_id=f"telegram-{actor_id}-{int(datetime.now(timezone.utc).timestamp())}",
+            trace_id=f"telegram-{actor_id}-{int(datetime.now(UTC).timestamp())}",
             event_type="KillSwitchState",
         )
         return state
@@ -270,13 +270,13 @@ class TelegramControlBot:
         response.raise_for_status()
         result = response.json()
         if not isinstance(result, dict) or not isinstance(result.get("success"), bool):
-            raise RuntimeError("MT5 adapter returned an invalid flatten result.")
+            raise TypeError("MT5 adapter returned an invalid flatten result.")
         return result
 
     async def _status_text(self) -> str:
         try:
             snapshot = await self.mt5.get_account_status()
-            self._last_snapshot_at = datetime.now(timezone.utc)
+            self._last_snapshot_at = datetime.now(UTC)
             MT5_CONNECTED.set(1)
             account = snapshot.account
             if snapshot.host_cpu_percent is not None:
@@ -412,7 +412,7 @@ class TelegramControlBot:
                     },
                 )
                 if not isinstance(result, list):
-                    raise RuntimeError("Telegram getUpdates returned an invalid result.")
+                    raise TypeError("Telegram getUpdates returned an invalid result.")
                 for update in result:
                     if not isinstance(update, dict):
                         continue
@@ -424,7 +424,7 @@ class TelegramControlBot:
                         continue
                     try:
                         reply = await self._handle_command(message)
-                    except (httpx.HTTPError, RuntimeError, ValueError):
+                    except (httpx.HTTPError, RuntimeError, TypeError, ValueError):
                         logger.exception("Telegram operator command failed")
                         chat = message.get("chat")
                         reply = (
@@ -509,7 +509,7 @@ class TelegramControlBot:
                 adapter_was_available = True
             if snapshot is not None:
                 MT5_CONNECTED.set(1)
-                self._last_snapshot_at = datetime.now(timezone.utc)
+                self._last_snapshot_at = datetime.now(UTC)
                 if snapshot.host_cpu_percent is not None:
                     HOST_CPU_PERCENT.set(float(snapshot.host_cpu_percent))
                 if snapshot.host_memory_percent is not None:

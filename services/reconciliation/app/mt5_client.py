@@ -21,7 +21,7 @@ class MT5AdapterClient:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = (base_url or os.environ.get(
-            "MT5_ADAPTER_URL", "http://host.docker.internal:8765"
+            "MT5_ADAPTER_URL", "http://localhost:8765"
         )).rstrip("/") + "/"
         parsed_url = urlsplit(self.base_url)
         if (
@@ -36,7 +36,7 @@ class MT5AdapterClient:
         if (
             parsed_url.scheme != "https"
             and parsed_url.hostname.casefold()
-            not in {"host.docker.internal", "localhost", "127.0.0.1", "::1"}
+            not in {"localhost", "127.0.0.1", "::1"}
         ):
             raise ValueError("Use HTTPS for non-loopback MT5 adapter URLs.")
         self.token = token or os.environ.get("MT5_ADAPTER_TOKEN", "")
@@ -68,7 +68,7 @@ class MT5AdapterClient:
         try:
             response = await self.client.get(
                 urljoin(self.base_url, "v1/account"),
-                headers={"Authorization": f"******"},
+                headers={"Authorization": f"Bearer {self.token}"},
             )
             response.raise_for_status()
             return MT5HostStatus.model_validate_json(response.content)

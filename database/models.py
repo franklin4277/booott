@@ -1,7 +1,7 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
-from uuid import UUID, uuid4
+from typing import Any, ClassVar
+from uuid import uuid4
 
 from sqlalchemy import (
     BigInteger,
@@ -14,13 +14,18 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 
 class Base(DeclarativeBase):
-    type_annotation_map = {dict[str, Any]: JSON().with_variant(JSONB, "postgresql")}
+    type_annotation_map: ClassVar = {
+        dict[str, Any]: JSON().with_variant(JSONB, "postgresql")
+    }
+
+
+def _uuid_default() -> str:
+    return str(uuid4())
 
 
 class Account(Base):
@@ -45,8 +50,8 @@ class Signal(Base):
     __tablename__ = "signals"
     __table_args__ = (Index("ix_signals_symbol_created_at", "symbol", "created_at"),)
 
-    signal_id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True
+    signal_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=_uuid_default
     )
     strategy_id: Mapped[str] = mapped_column(String(128), nullable=False)
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -68,8 +73,8 @@ class Signal(Base):
     trade_intent: Mapped[dict[str, Any] | None] = mapped_column(
         JSON().with_variant(JSONB, "postgresql")
     )
-    order_id: Mapped[UUID | None] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), unique=True
+    order_id: Mapped[str | None] = mapped_column(
+        String(36), unique=True
     )
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="SIGNAL")
     trades: Mapped[list["Trade"]] = relationship(back_populates="signal")
@@ -83,19 +88,19 @@ class Trade(Base):
         Index("ix_trades_status_symbol", "status", "symbol"),
     )
 
-    trade_id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    trade_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=_uuid_default
     )
     ticket: Mapped[int | None] = mapped_column(BigInteger)
     mt5_ticket: Mapped[int | None] = mapped_column(BigInteger)
     order_ticket: Mapped[int | None] = mapped_column(BigInteger)
-    client_order_id: Mapped[UUID | None] = mapped_column(
-        PostgreSQLUUID(as_uuid=True)
+    client_order_id: Mapped[str | None] = mapped_column(
+        String(36)
     )
-    intent_id: Mapped[UUID | None] = mapped_column(PostgreSQLUUID(as_uuid=True))
+    intent_id: Mapped[str | None] = mapped_column(String(36))
     broker_order_id: Mapped[str | None] = mapped_column(String(128))
-    signal_id: Mapped[UUID | None] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), ForeignKey("signals.signal_id")
+    signal_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("signals.signal_id")
     )
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     side: Mapped[str] = mapped_column(String(8), nullable=False)
@@ -133,8 +138,8 @@ class Trade(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
     signal: Mapped[Signal | None] = relationship(back_populates="trades")
 
@@ -148,8 +153,8 @@ class AuditLog(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    event_id: Mapped[UUID] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), nullable=False, unique=True
+    event_id: Mapped[str] = mapped_column(
+        String(36), nullable=False, unique=True, default=_uuid_default
     )
     trace_id: Mapped[str] = mapped_column(String(128), nullable=False)
     event_type: Mapped[str] = mapped_column(String(128), nullable=False)

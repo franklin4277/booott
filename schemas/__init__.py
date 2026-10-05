@@ -1,8 +1,7 @@
 from schemas.events import EventEnvelope
-from schemas.models import TradingState
 from schemas.messages import (
-    AIAnalysisResult,
     AccountState,
+    AIAnalysisResult,
     BarData,
     ExecutionReport,
     HeartbeatMessage,
@@ -13,6 +12,7 @@ from schemas.messages import (
     TickData,
     TradeIntent,
 )
+from schemas.models import TradingState
 
 __all__ = [
     "AIAnalysisResult",

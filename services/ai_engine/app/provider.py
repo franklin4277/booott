@@ -13,6 +13,20 @@ class AIProvider(Protocol):
     ) -> AIAnalysisResult: ...
 
 
+class UnavailableProvider:
+    """Fail closed when local development has no provider credentials."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+    async def analyze(
+        self,
+        signal: PatternSetupSignal,
+        market_context: Mapping[str, Any],
+    ) -> AIAnalysisResult:
+        raise RuntimeError(self.reason)
+
+
 class InstructorProvider:
     def __init__(
         self,

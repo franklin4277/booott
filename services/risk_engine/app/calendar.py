@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
@@ -41,8 +41,8 @@ class EconomicCalendarClient:
         query = dict(parse_qsl(parsed.query, keep_blank_values=True))
         query.update(
             {
-                "from": start.astimezone(timezone.utc).isoformat(),
-                "to": end.astimezone(timezone.utc).isoformat(),
+                "from": start.astimezone(UTC).isoformat(),
+                "to": end.astimezone(UTC).isoformat(),
             }
         )
         request_url = urlunsplit(
@@ -66,7 +66,7 @@ class EconomicCalendarClient:
             body = json.loads(raw_body)
             items = body["events"] if isinstance(body, dict) else body
             if not isinstance(items, list):
-                raise ValueError("events must be a list")
+                raise TypeError("events must be a list")
             return [EconomicCalendarEvent.model_validate(item) for item in items]
         except (KeyError, TypeError, ValueError, ValidationError) as exc:
             raise CalendarUnavailableError(
@@ -100,7 +100,7 @@ class EconomicCalendarClient:
         events = await self.events_between(start, end)
         normalized_currencies = {currency.upper() for currency in currencies}
         for event in events:
-            event_time = event.timestamp.astimezone(timezone.utc)
+            event_time = event.timestamp.astimezone(UTC)
             if (
                 event.impact.casefold() == "high"
                 and event.currency.upper() in normalized_currencies

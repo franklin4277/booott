@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from uuid import UUID, uuid4
@@ -35,12 +35,12 @@ class PositionExposure(StrictModel):
     source_order_id: UUID | None = None
     symbol: str = Field(min_length=1, max_length=32)
     side: TradeSide
-    risk_amount: Decimal = Field(ge=Decimal("0"), allow_inf_nan=False)
+    risk_amount: Decimal = Field(ge=Decimal(0), allow_inf_nan=False)
 
 
 class PortfolioSnapshot(StrictModel):
     account: AccountState
-    daily_starting_equity: Decimal = Field(gt=Decimal("0"), allow_inf_nan=False)
+    daily_starting_equity: Decimal = Field(gt=Decimal(0), allow_inf_nan=False)
     positions: list[PositionExposure] = Field(default_factory=list)
 
 
@@ -59,7 +59,7 @@ class RiskRejection(StrictModel):
     code: RiskRejectionCode
     reason: str = Field(min_length=1, max_length=1000)
     occurred_at: AwareDatetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
     trace_id: str | None = Field(default=None, min_length=1, max_length=128)
 
@@ -68,7 +68,7 @@ class RiskApproval(StrictModel):
     signal_id: UUID
     symbol: str
     side: TradeSide
-    proposed_risk_amount: Decimal = Field(ge=Decimal("0"), allow_inf_nan=False)
-    portfolio_heat_after: Decimal = Field(ge=Decimal("0"), allow_inf_nan=False)
-    correlated_risk_after: Decimal = Field(ge=Decimal("0"), allow_inf_nan=False)
+    proposed_risk_amount: Decimal = Field(ge=Decimal(0), allow_inf_nan=False)
+    portfolio_heat_after: Decimal = Field(ge=Decimal(0), allow_inf_nan=False)
+    correlated_risk_after: Decimal = Field(ge=Decimal(0), allow_inf_nan=False)
     timestamp: AwareDatetime

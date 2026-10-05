@@ -1,7 +1,7 @@
 import os
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -149,12 +149,12 @@ class PatternEngine:
             return None
 
         confidence = min(
-            Decimal("1"),
+            Decimal(1),
             Decimal("0.5")
-            + min(volatility_ratio - Decimal("1"), Decimal("1")) * Decimal("0.2")
+            + min(volatility_ratio - Decimal(1), Decimal(1)) * Decimal("0.2")
             + Decimal("0.1") * len(evidence),
         )
-        created_at = datetime.now(timezone.utc)
+        created_at = datetime.now(UTC)
         return PatternSetupSignal(
             strategy_id="multi-timeframe-pattern-v1",
             symbol=bar.symbol,

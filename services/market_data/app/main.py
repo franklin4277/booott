@@ -6,12 +6,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException, Response, status
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
-from pydantic import ValidationError
 
 from event_bus.redis_bus import RedisEventBus
+from schemas.messages import BarData, TickData
 from services.market_data.app.consumer import MarketDataConsumer
 from services.market_data.app.storage import MarketDataStore
-from schemas.messages import BarData, TickData
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

@@ -2,16 +2,16 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Callable
 from uuid import UUID, uuid4
 
+from prometheus_client import Gauge
 from redis.exceptions import RedisError
 
 from event_bus.redis_bus import RedisEventBus, RedisEventBusError
-from prometheus_client import Gauge
 from schemas.messages import (
     AIAnalysisResult,
     AIRecommendation,
@@ -68,11 +68,11 @@ class RiskLimits:
                 correlations_json = '{"XAUUSD|EURUSD":0.75}'
             raw_correlations = json.loads(correlations_json)
             if not isinstance(raw_correlations, dict):
-                raise ValueError("correlation matrix must be a JSON object")
+                raise TypeError("correlation matrix must be a JSON object")
             correlations: dict[frozenset[str], Decimal] = {}
             for pair, value in raw_correlations.items():
                 if not isinstance(pair, str):
-                    raise ValueError("correlation keys must be strings")
+                    raise TypeError("correlation keys must be strings")
                 symbols = [symbol.strip().upper() for symbol in pair.split("|")]
                 if len(symbols) != 2 or not all(symbols) or symbols[0] == symbols[1]:
                     raise ValueError(
@@ -166,7 +166,7 @@ class RiskEngine:
                 "ORDER_SIGNING_SECRET or SECRET_KEY must contain at least 32 bytes"
             )
         self.signing_secret = configured_secret
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: datetime.now(UTC))
         self.portfolio: PortfolioSnapshot | None = None
         self.pending_signals: dict[str, PatternSetupSignal] = {}
         self.pending_ai_results: dict[str, AIAnalysisResult] = {}
@@ -261,7 +261,7 @@ class RiskEngine:
         signal: PatternSetupSignal,
         ai_result: AIAnalysisResult | None,
     ) -> None:
-        now = self.clock().astimezone(timezone.utc)
+        now = self.clock().astimezone(UTC)
         trace_id = signal.trace_id
         try:
             shared_safe_mode = await self.bus.get_state("system:safe_mode")
@@ -345,7 +345,7 @@ class RiskEngine:
         risk_multiplier = Decimal(1)
         if ai_result is not None:
             ai_age_seconds = (
-                now - ai_result.created_at.astimezone(timezone.utc)
+                now - ai_result.created_at.astimezone(UTC)
             ).total_seconds()
             if ai_age_seconds < -1 or ai_age_seconds > self.limits.max_signal_age_seconds:
                 await self._reject(
@@ -401,7 +401,7 @@ class RiskEngine:
             return
 
         account_age = (
-            now - snapshot.account.timestamp.astimezone(timezone.utc)
+            now - snapshot.account.timestamp.astimezone(UTC)
         ).total_seconds()
         if account_age < -1 or account_age > self.limits.account_state_max_age_seconds:
             await self._reject(
@@ -459,7 +459,7 @@ class RiskEngine:
             )
             return
 
-        now = self.clock().astimezone(timezone.utc)
+        now = self.clock().astimezone(UTC)
         rejection = self._validate_signal_age(signal, now)
         if rejection is not None:
             await self._reject(
@@ -471,7 +471,7 @@ class RiskEngine:
             return
         if ai_result is not None:
             ai_age_seconds = (
-                now - ai_result.created_at.astimezone(timezone.utc)
+                now - ai_result.created_at.astimezone(UTC)
             ).total_seconds()
             if ai_age_seconds < -1 or ai_age_seconds > self.limits.max_signal_age_seconds:
                 await self._reject(
@@ -501,7 +501,7 @@ class RiskEngine:
             )
             return
         account_age = (
-            now - snapshot.account.timestamp.astimezone(timezone.utc)
+            now - snapshot.account.timestamp.astimezone(UTC)
         ).total_seconds()
         if account_age < -1 or account_age > self.limits.account_state_max_age_seconds:
             await self._reject(
@@ -634,8 +634,8 @@ class RiskEngine:
         signal: PatternSetupSignal,
         now: datetime,
     ) -> RiskRejectionCode | None:
-        created_at = signal.created_at.astimezone(timezone.utc)
-        expires_at = signal.expires_at.astimezone(timezone.utc)
+        created_at = signal.created_at.astimezone(UTC)
+        expires_at = signal.expires_at.astimezone(UTC)
         if now >= expires_at:
             return RiskRejectionCode.SIGNAL_EXPIRED
         age_seconds = (now - created_at).total_seconds()
@@ -644,18 +644,18 @@ class RiskEngine:
         return None
 
     def _prune_pending_signals(self) -> None:
-        now = self.clock().astimezone(timezone.utc)
+        now = self.clock().astimezone(UTC)
         expired_ids = [
             signal_id
             for signal_id, signal in self.pending_signals.items()
-            if signal.expires_at.astimezone(timezone.utc) <= now
+            if signal.expires_at.astimezone(UTC) <= now
         ]
         for signal_id in expired_ids:
             del self.pending_signals[signal_id]
         expired_ai_ids = [
             signal_id
             for signal_id, result in self.pending_ai_results.items()
-            if (now - result.created_at.astimezone(timezone.utc)).total_seconds()
+            if (now - result.created_at.astimezone(UTC)).total_seconds()
             > self.limits.max_signal_age_seconds
         ]
         for signal_id in expired_ai_ids:
@@ -707,7 +707,7 @@ class RiskEngine:
             symbol=symbol,
             code=code,
             reason=reason,
-            occurred_at=self.clock().astimezone(timezone.utc),
+            occurred_at=self.clock().astimezone(UTC),
             trace_id=trace_id,
         )
         logger.warning("RISK_REJECTION %s", rejection.model_dump_json())

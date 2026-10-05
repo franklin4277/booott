@@ -537,7 +537,7 @@ async def _publish_market_data(client: httpx.AsyncClient) -> None:
                 response = await client.post(
                     f"{ingest_url}/v1/ingest/{kind}",
                     json=payload,
-                    headers={"Authorization": f"******"},
+                    headers={"Authorization": f"Bearer {token}"},
                 )
                 response.raise_for_status()
                 if kind == "tick":

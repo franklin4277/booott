@@ -21,8 +21,8 @@ class AIAnalysisRequest(StrictModel):
     quantitative_override_decision: AIRecommendation | None = None
     quantitative_override_confidence: Decimal | None = Field(
         default=None,
-        ge=Decimal("0"),
-        le=Decimal("1"),
+        ge=Decimal(0),
+        le=Decimal(1),
         allow_inf_nan=False,
     )
     quantitative_override_reasoning: str | None = Field(

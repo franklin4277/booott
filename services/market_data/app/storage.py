@@ -1,5 +1,4 @@
 import os
-from decimal import Decimal
 from urllib.parse import quote_plus
 
 from sqlalchemy import (
@@ -11,10 +10,10 @@ from sqlalchemy import (
     Numeric,
     String,
     Table,
+    insert,
     text,
 )
-from sqlalchemy.dialects.postgresql import UUID as PostgreSQLUUID
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from schemas.messages import BarData, TickData
@@ -25,7 +24,7 @@ ticks = Table(
     "market_ticks",
     metadata,
     Column("timestamp", DateTime(timezone=True), primary_key=True),
-    Column("tick_id", PostgreSQLUUID(as_uuid=True), primary_key=True),
+    Column("tick_id", String(36), primary_key=True),
     Column("symbol", String(32), nullable=False),
     Column("source", String(64), nullable=False),
     Column("bid", Numeric(24, 10), nullable=False),
@@ -55,9 +54,9 @@ def database_url_from_environment() -> str:
     configured_url = os.environ.get("DATABASE_URL")
     if configured_url:
         if configured_url.startswith("postgres://"):
-            return "postgresql+asyncpg://" + configured_url[len("postgres://") :]
+            return "postgresql+asyncpg://" + configured_url[len("postgres://"):]
         if configured_url.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + configured_url[len("postgresql://") :]
+            return "postgresql+asyncpg://" + configured_url[len("postgresql://"):]
         return configured_url
 
     user = quote_plus(os.environ.get("POSTGRES_USER", "trading_app"))
@@ -69,33 +68,45 @@ def database_url_from_environment() -> str:
     return f"postgresql+asyncpg://{credentials}@{host}:{port}/{database}"
 
 
+def _is_sqlite(url: str) -> bool:
+    return url.startswith("sqlite")
+
+
 class MarketDataStore:
     def __init__(self, engine: AsyncEngine | None = None) -> None:
         self.engine = engine or create_async_engine(
             database_url_from_environment(),
             pool_pre_ping=True,
         )
+        self._dialect = self.engine.url.get_backend_name()
 
     async def initialize(self) -> None:
+        url = str(self.engine.url)
         async with self.engine.begin() as connection:
             await connection.run_sync(metadata.create_all)
-            await connection.execute(
-                text(
-                    "SELECT create_hypertable('market_ticks', 'timestamp', "
-                    "if_not_exists => TRUE, migrate_data => TRUE)"
+            if not _is_sqlite(url):
+                await connection.execute(
+                    text(
+                        "SELECT create_hypertable('market_ticks', 'timestamp', "
+                        "if_not_exists => TRUE, migrate_data => TRUE)"
+                    )
                 )
-            )
-            await connection.execute(
-                text(
-                    "SELECT create_hypertable('market_bars', 'timestamp', "
-                    "if_not_exists => TRUE, migrate_data => TRUE)"
+                await connection.execute(
+                    text(
+                        "SELECT create_hypertable('market_bars', 'timestamp', "
+                        "if_not_exists => TRUE, migrate_data => TRUE)"
+                    )
                 )
-            )
+
+    def _insert_stmt(self, table):
+        if self._dialect == "postgresql":
+            return pg_insert(table)
+        return insert(table)
 
     async def store_tick(self, tick: TickData) -> None:
         values = {
             "timestamp": tick.timestamp,
-            "tick_id": tick.tick_id,
+            "tick_id": str(tick.tick_id),
             "symbol": tick.symbol,
             "source": tick.source,
             "bid": tick.bid,
@@ -104,7 +115,7 @@ class MarketDataStore:
             "volume": tick.volume,
             "sequence": tick.sequence,
         }
-        statement = insert(ticks).values(**values).on_conflict_do_nothing(
+        statement = self._insert_stmt(ticks).values(**values).on_conflict_do_nothing(
             index_elements=["timestamp", "tick_id"]
         )
         async with self.engine.begin() as connection:
@@ -123,7 +134,7 @@ class MarketDataStore:
             "spread": bar.spread,
             "real_volume": bar.real_volume,
         }
-        statement = insert(bars).values(**values).on_conflict_do_nothing(
+        statement = self._insert_stmt(bars).values(**values).on_conflict_do_nothing(
             index_elements=["timestamp", "symbol", "timeframe"]
         )
         async with self.engine.begin() as connection:

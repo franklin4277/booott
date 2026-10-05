@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pydantic import ValidationError
 
@@ -62,7 +62,7 @@ class PatternConsumer:
             )
             return
         bar_age_seconds = (
-            datetime.now(timezone.utc) - bar.timestamp.astimezone(timezone.utc)
+            datetime.now(UTC) - bar.timestamp.astimezone(UTC)
         ).total_seconds()
         bar_close_age_seconds = bar_age_seconds - timeframe_minutes * 60
         if bar_close_age_seconds < -5 or bar_close_age_seconds > 60:

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Response, status
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
+from database.models import Base
 from database.repository import LedgerRepository
 from database.session import create_database_engine
 from event_bus.redis_bus import RedisEventBus
@@ -24,6 +25,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     engine = create_database_engine()
+    if engine.url.get_backend_name() == "sqlite":
+        # Local mode has no Alembic migration runner.  Create the embedded
+        # SQLite schema before restoring the persisted SAFE_MODE state.
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
     repository = LedgerRepository(engine)
     bus = RedisEventBus()
     mt5 = MT5AdapterClient()

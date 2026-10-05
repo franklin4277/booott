@@ -2,12 +2,12 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import httpx
-from pydantic import ValidationError
 from prometheus_client import Counter, Gauge
+from pydantic import ValidationError
 
 from event_bus.redis_bus import RedisEventBus
 from schemas.events import EventEnvelope
@@ -137,7 +137,7 @@ class ExecutionWorker:
             )
             EXECUTION_ORDERS.labels(outcome="rejected").inc()
             return
-        if order.expires_at is None or order.expires_at <= datetime.now(timezone.utc):
+        if order.expires_at is None or order.expires_at <= datetime.now(UTC):
             await self._publish_report(
                 order,
                 ExecutionStatus.FAILED,
@@ -150,7 +150,7 @@ class ExecutionWorker:
             response = await self.mt5.client.post(
                 f"{self.mt5.base_url.rstrip('/')}/v1/orders",
                 json=order.model_dump(mode="json"),
-                headers={"Authorization": f"******"},
+                headers={"Authorization": f"Bearer {self.mt5.token}"},
                 timeout=10,
             )
             response.raise_for_status()
@@ -189,8 +189,8 @@ class ExecutionWorker:
         report = ExecutionReport(
             order_id=order.order_id,
             status=status,
-            executed_volume=Decimal("0"),
-            timestamp=datetime.now(timezone.utc),
+            executed_volume=Decimal(0),
+            timestamp=datetime.now(UTC),
             message=message,
             trace_id=order.trace_id,
         )

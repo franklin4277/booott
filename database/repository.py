@@ -1,13 +1,14 @@
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-import json
 from typing import Any
-from uuid import UUID
 
+from sqlalchemy import insert as sa_insert
 from sqlalchemy import or_, select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from database.models import Account, AuditLog, Signal, SystemState, Trade
@@ -20,10 +21,20 @@ from schemas.messages import (
     SignedOrderPayload,
 )
 from services.reconciliation.app.models import (
-    MT5AccountSnapshot,
     MT5Position,
     MT5Snapshot,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _insert_for(engine: AsyncEngine):
+    dialect = engine.url.get_backend_name()
+    if dialect == "postgresql":
+        return pg_insert
+    if dialect == "sqlite":
+        return sqlite_insert
+    return sa_insert
 
 logger = logging.getLogger(__name__)
 OPEN_TRADE_STATUSES = {
@@ -51,12 +62,16 @@ class LedgerRepository:
     ) -> None:
         self.engine = engine
         self.sessions = sessions or async_sessionmaker(engine, expire_on_commit=False)
+        self._insert = _insert_for(engine)
+
+    def _do_insert(self, table):
+        return self._insert(table)
 
     async def record_event(self, event: EventEnvelope) -> None:
         payload = event.payload
         async with self.sessions.begin() as session:
-            audit = insert(AuditLog).values(
-                event_id=event.event_id,
+            audit = self._do_insert(AuditLog).values(
+                event_id=str(event.event_id),
                 trace_id=event.trace_id,
                 event_type=event.event_type,
                 entity_type=self._entity_type(event.event_type),
@@ -69,8 +84,8 @@ class LedgerRepository:
                 return
             if event.event_type == "PatternSetupSignal":
                 signal = PatternSetupSignal.model_validate_json(json.dumps(payload))
-                statement = insert(Signal).values(
-                    signal_id=signal.signal_id,
+                statement = self._do_insert(Signal).values(
+                    signal_id=str(signal.signal_id),
                     strategy_id=signal.strategy_id,
                     symbol=signal.symbol,
                     timeframe=signal.timeframe,
@@ -101,14 +116,14 @@ class LedgerRepository:
                 await session.execute(
                     Trade.__table__.update()
                     .where(
-                        Trade.intent_id == signal.signal_id,
+                        Trade.intent_id == str(signal.signal_id),
                         Trade.signal_id.is_(None),
                     )
-                    .values(signal_id=signal.signal_id)
+                    .values(signal_id=str(signal.signal_id))
                 )
                 linked_trade = await session.execute(
                     select(Trade.client_order_id, Trade.status)
-                    .where(Trade.intent_id == signal.signal_id)
+                    .where(Trade.intent_id == str(signal.signal_id))
                     .order_by(Trade.updated_at.desc())
                     .limit(1)
                 )
@@ -116,7 +131,7 @@ class LedgerRepository:
                 if linked_order is not None:
                     await session.execute(
                         Signal.__table__.update()
-                        .where(Signal.signal_id == signal.signal_id)
+                        .where(Signal.signal_id == str(signal.signal_id))
                         .values(
                             order_id=linked_order.client_order_id,
                             status=linked_order.status,
@@ -133,23 +148,23 @@ class LedgerRepository:
                 if analysis.signal_id is not None:
                     await session.execute(
                         Signal.__table__.update()
-                        .where(Signal.signal_id == analysis.signal_id)
+                        .where(Signal.signal_id == str(analysis.signal_id))
                         .values(ai_analysis=analysis.model_dump(mode="json"))
                     )
             elif event.event_type == "SignedOrderPayload":
                 order = SignedOrderPayload.model_validate_json(json.dumps(payload))
                 signal_result = await session.execute(
-                    select(Signal).where(Signal.signal_id == order.intent_id)
+                    select(Signal).where(Signal.signal_id == str(order.intent_id))
                 )
                 signal = signal_result.scalar_one_or_none()
                 if signal is not None:
                     signal.trade_intent = order.model_dump(mode="json")
-                    signal.order_id = order.order_id
+                    signal.order_id = str(order.order_id)
                     signal.status = "APPROVED"
-                statement = insert(Trade).values(
-                    client_order_id=order.order_id,
-                    intent_id=order.intent_id,
-                    signal_id=order.intent_id if signal is not None else None,
+                statement = self._do_insert(Trade).values(
+                    client_order_id=str(order.order_id),
+                    intent_id=str(order.intent_id),
+                    signal_id=str(order.intent_id) if signal is not None else None,
                     symbol=order.symbol,
                     side=order.side.value,
                     lot=order.volume,
@@ -162,7 +177,7 @@ class LedgerRepository:
                 ).on_conflict_do_nothing(index_elements=["client_order_id"])
                 await session.execute(statement)
                 trade_result = await session.execute(
-                    select(Trade).where(Trade.client_order_id == order.order_id)
+                    select(Trade).where(Trade.client_order_id == str(order.order_id))
                 )
                 trade = trade_result.scalar_one_or_none()
                 previous_execution = await session.execute(
@@ -184,7 +199,7 @@ class LedgerRepository:
             elif event.event_type == "ExecutionReport":
                 report = ExecutionReport.model_validate_json(json.dumps(payload))
                 trade_result = await session.execute(
-                    select(Trade).where(Trade.client_order_id == report.order_id)
+                    select(Trade).where(Trade.client_order_id == str(report.order_id))
                 )
                 trade = trade_result.scalar_one_or_none()
                 if trade is not None:
@@ -252,7 +267,7 @@ class LedgerRepository:
                 state["updated_at"] = reconciled_at.isoformat()
             else:
                 state = proposed_safe_mode
-            statement = insert(SystemState).values(
+            statement = self._do_insert(SystemState).values(
                 key="safe_mode", value=state, updated_at=reconciled_at
             ).on_conflict_do_update(
                 index_elements=["key"],
@@ -283,7 +298,7 @@ class LedgerRepository:
             return result.scalar_one_or_none()
 
     async def update_safe_mode(self, value: dict[str, Any], at: datetime) -> None:
-        statement = insert(SystemState).values(
+        statement = self._do_insert(SystemState).values(
             key="safe_mode", value=value, updated_at=at
         ).on_conflict_do_update(
             index_elements=["key"],
