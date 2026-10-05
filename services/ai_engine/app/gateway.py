@@ -108,7 +108,24 @@ class AIGateway:
             clock=monotonic_clock if monotonic_clock is not None else time.monotonic,
             on_state_change=self._on_state_change,
         )
-        self._last_state_reason = "AI gateway initialized"
+        self._last_state_reason = (
+            self.provider.reason
+            if isinstance(self.provider, UnavailableProvider)
+            else "AI provider has not completed a successful analysis"
+        )
+        self._provider_healthy = False
+
+    @property
+    def provider_configured(self) -> bool:
+        return not isinstance(self.provider, UnavailableProvider)
+
+    @property
+    def is_available(self) -> bool:
+        return (
+            self.provider_configured
+            and self._provider_healthy
+            and self.breaker.state == CircuitState.CLOSED
+        )
 
     async def _on_state_change(self, state: CircuitState) -> None:
         if state == CircuitState.OPEN:
@@ -130,7 +147,7 @@ class AIGateway:
         state_message = AIStateMessage(
             ai_state=(
                 AIAvailability.OFFLINE
-                if self.breaker.state != CircuitState.CLOSED
+                if not self.is_available
                 else AIAvailability.ONLINE
             ),
             circuit_state=self.breaker.state,
@@ -247,7 +264,13 @@ class AIGateway:
             )
             if result.decision == AIRecommendation.NO_TRADE:
                 result = result.model_copy(update={"risk_multiplier": Decimal(0)})
+            previously_available = self.is_available
+            was_half_open = self.breaker.state == CircuitState.HALF_OPEN
+            self._provider_healthy = True
+            self._last_state_reason = "AI provider is available"
             await self.breaker.record_success()
+            if not previously_available and not was_half_open:
+                await self.publish_state(trace_id)
             AI_REQUEST_LATENCY.labels(
                 provider=self.provider_name, outcome="success"
             ).observe(time.monotonic() - call_started)
@@ -264,6 +287,8 @@ class AIGateway:
                 result=result,
             )
         except asyncio.CancelledError:
+            self._provider_healthy = False
+            self._last_state_reason = "AI provider analysis was cancelled"
             await self.breaker.record_failure()
             AI_REQUEST_LATENCY.labels(
                 provider=self.provider_name, outcome="cancelled"
@@ -271,6 +296,10 @@ class AIGateway:
             AI_REQUESTS.labels(outcome="cancelled").inc()
             raise
         except Exception as exc:
+            self._provider_healthy = False
+            self._last_state_reason = (
+                f"AI provider analysis failed ({type(exc).__name__})"
+            )
             await self.breaker.record_failure()
             AI_REQUEST_LATENCY.labels(
                 provider=self.provider_name, outcome="failure"

@@ -1,0 +1,25 @@
+START AND STOP THE TRADING PLATFORM
+===================================
+
+Open PowerShell and paste the command block you want to use.
+
+START
+-----
+Set-Location 'C:\Users\frank\bottttt\booott'
+powershell -ExecutionPolicy Bypass -File .\scripts\start-all.ps1
+
+Dashboard:
+http://127.0.0.1:8000/dashboard
+
+WARNING: Live trading is enabled in the current configuration.
+If MT5 is connected to a real account and a signal passes the AI and risk checks,
+the platform can submit a real order automatically. For testing, confirm MT5
+is connected to a DEMO account before starting.
+
+STOP
+----
+Set-Location 'C:\Users\frank\bottttt\booott'
+powershell -ExecutionPolicy Bypass -File .\scripts\stop-all.ps1
+
+Stopping the services does not close or change positions already open in MT5.
+Manage existing positions in the MT5 terminal.

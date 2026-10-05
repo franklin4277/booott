@@ -37,15 +37,23 @@ class InstructorProvider:
         timeout_seconds: float = 20.0,
     ) -> None:
         provider_name = provider.strip().lower()
-        if provider_name not in {"openai", "anthropic"}:
-            raise ValueError("AI_PROVIDER must be either 'openai' or 'anthropic'")
+        if provider_name not in {"openai", "openrouter", "anthropic"}:
+            raise ValueError(
+                "AI_PROVIDER must be 'openai', 'openrouter', or 'anthropic'"
+            )
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         self.provider = provider_name
         self.model = model
         self.api_key = api_key or self._read_api_key(provider_name)
         if not self.api_key:
-            key_name = "OPENAI_API_KEY" if provider_name == "openai" else "ANTHROPIC_API_KEY"
+            key_name = (
+                "OPENAI_API_KEY"
+                if provider_name == "openai"
+                else "OPENROUTER_API_KEY"
+                if provider_name == "openrouter"
+                else "ANTHROPIC_API_KEY"
+            )
             raise ValueError(
                 f"Set AI_API_KEY or {key_name} before starting the AI Gateway."
             )
@@ -56,6 +64,8 @@ class InstructorProvider:
     def _read_api_key(provider: str) -> str | None:
         if provider == "openai":
             return os.environ.get("OPENAI_API_KEY") or os.environ.get("AI_API_KEY")
+        if provider == "openrouter":
+            return os.environ.get("OPENROUTER_API_KEY") or os.environ.get("AI_API_KEY")
         return os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("AI_API_KEY")
 
     def _get_client(self) -> Any:
@@ -64,17 +74,28 @@ class InstructorProvider:
 
         import instructor
 
-        if self.provider == "openai":
+        if self.provider in {"openai", "openrouter"}:
             from openai import AsyncOpenAI
 
+            kwargs: dict[str, Any] = {
+                "api_key": self.api_key,
+                "timeout": self.timeout_seconds,
+                "max_retries": 0,
+            }
+            if self.provider == "openrouter":
+                kwargs["base_url"] = "https://openrouter.ai/api/v1"
             self._client = instructor.from_openai(
-                AsyncOpenAI(api_key=self.api_key, timeout=self.timeout_seconds)
+                AsyncOpenAI(**kwargs)
             )
         else:
             from anthropic import AsyncAnthropic
 
             self._client = instructor.from_anthropic(
-                AsyncAnthropic(api_key=self.api_key, timeout=self.timeout_seconds)
+                AsyncAnthropic(
+                    api_key=self.api_key,
+                    timeout=self.timeout_seconds,
+                    max_retries=0,
+                )
             )
         return self._client
 

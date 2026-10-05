@@ -4,12 +4,14 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, HTTPException, Response, status
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
+from pydantic import ValidationError
 
 from event_bus.redis_bus import RedisEventBus
 from schemas.messages import BarData, TickData
 from services.market_data.app.consumer import MarketDataConsumer
+from services.market_data.app.freshness import StaleMarketTickError
 from services.market_data.app.storage import MarketDataStore
 
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +55,16 @@ def _authorize_ingest(token: str | None) -> None:
         )
 
 
+async def _parse_ingest_payload(
+    request: Request,
+    model_type: type[TickData] | type[BarData],
+) -> TickData | BarData:
+    try:
+        return model_type.model_validate_json(await request.body())
+    except ValidationError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.errors()) from exc
+
+
 @app.get("/health", tags=["operations"])
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "market-data"}
@@ -60,21 +72,33 @@ async def health() -> dict[str, str]:
 
 @app.post("/v1/ingest/tick", status_code=status.HTTP_202_ACCEPTED)
 async def ingest_tick(
-    tick: TickData,
-    authorization: str | None = Header(default=None),
+    request: Request,
 ) -> dict[str, str]:
-    _authorize_ingest(authorization)
+    _authorize_ingest(request.headers.get("authorization"))
+    tick = await _parse_ingest_payload(request, TickData)
+    assert isinstance(tick, TickData)
     consumer: MarketDataConsumer = app.state.market_data_consumer
-    await consumer.handle_tick(tick, trace_id=tick.tick_id.hex, publish_event=True)
+    try:
+        await consumer.handle_tick(
+            tick,
+            trace_id=tick.tick_id.hex,
+            publish_event=True,
+        )
+    except StaleMarketTickError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     return {"status": "accepted", "event_id": str(tick.tick_id)}
 
 
 @app.post("/v1/ingest/bar", status_code=status.HTTP_202_ACCEPTED)
 async def ingest_bar(
-    bar: BarData,
-    authorization: str | None = Header(default=None),
+    request: Request,
 ) -> dict[str, str]:
-    _authorize_ingest(authorization)
+    _authorize_ingest(request.headers.get("authorization"))
+    bar = await _parse_ingest_payload(request, BarData)
+    assert isinstance(bar, BarData)
     consumer: MarketDataConsumer = app.state.market_data_consumer
     await consumer.handle_bar(bar, publish_event=True)
     return {

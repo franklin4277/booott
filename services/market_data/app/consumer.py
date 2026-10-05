@@ -21,6 +21,10 @@ from schemas.messages import (
     TechnicalIndicatorSnapshot,
     TickData,
 )
+from services.market_data.app.freshness import (
+    StaleMarketTickError,
+    require_fresh_market_tick,
+)
 from services.market_data.app.indicators import IndicatorSnapshot, IndicatorState
 from services.market_data.app.storage import MarketDataStore
 
@@ -88,6 +92,7 @@ class MarketDataConsumer:
         trace_id: str | None = None,
         publish_event: bool = False,
     ) -> IndicatorSnapshot:
+        require_fresh_market_tick(tick.timestamp)
         key = tick.tick_id
         if key in self._seen_tick_keys:
             return self._state(tick.symbol, "tick").snapshot()
@@ -183,6 +188,8 @@ class MarketDataConsumer:
                 await self.handle_bar(bar, event.trace_id)
             else:
                 logger.warning("Ignoring unsupported market event type %s", event.event_type)
+        except StaleMarketTickError as exc:
+            logger.warning("Ignoring stale market tick event %s: %s", event.event_id, exc)
         except ValidationError:
             logger.exception("Rejected invalid market event %s", event.event_id)
 
@@ -253,6 +260,8 @@ class MarketDataConsumer:
                             trace_id if isinstance(trace_id, str) else None,
                             publish_event=True,
                         )
+                except StaleMarketTickError as exc:
+                    logger.warning("Ignoring stale MT5 ZMQ tick: %s", exc)
                 except (UnicodeDecodeError, json.JSONDecodeError, ValueError, ValidationError):
                     logger.exception("Rejected invalid MT5 ZMQ %s message", expected_type)
         finally:

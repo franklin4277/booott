@@ -22,3 +22,8 @@ warming from service startup; the raw time series remains persisted in the
 database for later backfill or analysis. Bar indicator snapshots are
 published on `market.technicals`; tick spread metrics are published on
 `market.indicators`.
+
+Live ticks older than `MT5_MARKET_MAX_TICK_AGE_SECONDS` (30 seconds by
+default), or more than five seconds in the future, are rejected at the adapter
+and market-data consumer. Historical closed bars are still accepted for
+backfill, but the pattern engine will not emit a trade signal from a stale bar.

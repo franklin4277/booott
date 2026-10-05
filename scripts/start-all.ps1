@@ -227,6 +227,9 @@ if ($MT5_MARKET_DATA_ENABLED -eq "true" -and -not $SkipMT5) {
     $mt5StartInfo.UseShellExecute = $false
     $mt5StartInfo.CreateNoWindow = $true
     $mt5StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    Get-ChildItem Env: | ForEach-Object {
+        $mt5StartInfo.Environment[$_.Name] = $_.Value
+    }
     $mt5Proc = [System.Diagnostics.Process]::Start($mt5StartInfo)
     New-PidFile -Name "mt5-host-adapter" -Proc $mt5Proc
     Write-Info "Started MT5 host adapter (PID $($mt5Proc.Id), port $MT5_ADAPTER_PORT)"
@@ -247,6 +250,26 @@ function Wait-For-Health {
             if ($SkipMT5 -and $r.status -eq "degraded") {
                 Write-Warn "$Name is responding in safe local mode (MT5-dependent capability unavailable)"
                 return $true
+            }
+            if ($Name -eq "api-gateway" -and $r.status -eq "degraded" -and $r.services) {
+                $telegram = $null
+                $otherServicesHealthy = $true
+                foreach ($service in $r.services.PSObject.Properties) {
+                    if ($service.Name -eq "telegram-bot") {
+                        $telegram = $service.Value
+                    } elseif ($service.Value.status -ne "ok") {
+                        $otherServicesHealthy = $false
+                    }
+                }
+                if (
+                    $telegram -and
+                    $telegram.status -eq "degraded" -and
+                    $telegram.telegram -eq "disabled" -and
+                    $otherServicesHealthy
+                ) {
+                    Write-Warn "$Name is healthy; optional Telegram integration is disabled"
+                    return $true
+                }
             }
         } catch { }
         Start-Sleep -Milliseconds 500

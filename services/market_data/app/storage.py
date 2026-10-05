@@ -14,6 +14,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from schemas.messages import BarData, TickData
@@ -101,6 +102,8 @@ class MarketDataStore:
     def _insert_stmt(self, table):
         if self._dialect == "postgresql":
             return pg_insert(table)
+        if self._dialect == "sqlite":
+            return sqlite_insert(table)
         return insert(table)
 
     async def store_tick(self, tick: TickData) -> None:

@@ -351,7 +351,7 @@ class MarketDataConsumerTests(unittest.IsolatedAsyncioTestCase):
 
     @staticmethod
     def _timestamp() -> datetime:
-        return datetime(2026, 1, 15, 15, tzinfo=timezone.utc)
+        return datetime.now(timezone.utc)
 
 
 if __name__ == "__main__":

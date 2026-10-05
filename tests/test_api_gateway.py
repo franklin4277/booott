@@ -1,7 +1,4 @@
-import asyncio
-import os
 import unittest
-from unittest.mock import patch
 
 import httpx
 
@@ -20,6 +17,38 @@ def _make_mock_http_client():
             return httpx.Response(200, json={"status": "ok", "service": "market-data"})
         if "/v1/ingest/bar" in url:
             return httpx.Response(202, json={"status": "accepted", "symbol": "EURUSD"})
+        if "/v1/open-trades" in url:
+            return httpx.Response(200, json={"open_trades": []})
+        if "/v1/account" in url:
+            if not request.headers.get("authorization", "").startswith("Bearer "):
+                return httpx.Response(401)
+            return httpx.Response(
+                200,
+                json={
+                    "account": {
+                        "login": "12345678",
+                        "currency": "USD",
+                        "balance": "10000",
+                        "equity": "10100",
+                        "margin": "500",
+                        "free_margin": "9600",
+                    },
+                    "positions": [
+                        {
+                            "ticket": 42,
+                            "symbol": "EURUSD",
+                            "side": "buy",
+                            "volume": "0.1",
+                            "price_open": "1.1",
+                            "stop_loss": "1.09",
+                            "take_profit": "1.12",
+                            "profit": "10",
+                            "swap": "0",
+                            "opened_at": "2026-01-01T00:00:00Z",
+                        }
+                    ],
+                },
+            )
         if "/reconcile" in url:
             return httpx.Response(202, json={"trigger": "manual"})
         return httpx.Response(404)
@@ -93,6 +122,32 @@ class ApiGatewayTests(unittest.IsolatedAsyncioTestCase):
         body = response.json()
         self.assertEqual(body["status"], "ok")
         self.assertIn("market-data", body["services"])
+
+    async def test_dashboard_and_overview_are_available_locally(self):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api_gateway_app, client=("127.0.0.1", 1234)),
+            base_url="http://test",
+        ) as client:
+            page = await client.get("/dashboard")
+            overview = await client.get("/dashboard/api/overview")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("MT5 Trading Monitor", page.text)
+        self.assertEqual(overview.status_code, 200)
+        self.assertIn("health", overview.json())
+        self.assertEqual(overview.json()["account"]["balance"], "10000")
+        self.assertEqual(overview.json()["broker_positions"][0]["ticket"], 42)
+        self.assertIsNone(overview.json()["account_error"])
+
+    async def test_dashboard_renders_account_and_live_position_sections(self):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api_gateway_app, client=("127.0.0.1", 1234)),
+            base_url="http://test",
+        ) as client:
+            page = await client.get("/dashboard")
+
+        self.assertIn("Broker account", page.text)
+        self.assertIn("Live MT5 positions", page.text)
+        self.assertIn("Floating P/L", page.text)
 
 
 if __name__ == "__main__":

@@ -4,15 +4,14 @@ import os
 import secrets
 import sqlite3
 import threading
-import time
 from contextlib import asynccontextmanager, closing
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid5
 
-from fastapi import FastAPI, Header, HTTPException, Query, status
 import httpx
+from fastapi import FastAPI, Header, HTTPException, Query, status
 from pydantic import ValidationError
 
 from schemas.messages import (
@@ -20,6 +19,10 @@ from schemas.messages import (
     ExecutionStatus,
     OrderType,
     SignedOrderPayload,
+)
+from services.market_data.app.freshness import (
+    is_fresh_market_tick,
+    market_tick_age_seconds,
 )
 from utils.security import verify_payload
 
@@ -232,6 +235,9 @@ def _fetch_account_status() -> dict:
     account = mt5.account_info()
     if account is None:
         raise RuntimeError(f"MT5 account_info failed: {mt5.last_error()}")
+    positions = mt5.positions_get()
+    if positions is None:
+        raise RuntimeError(f"MT5 positions_get failed: {mt5.last_error()}")
     now = datetime.now(timezone.utc)
     return {
         "account": {
@@ -243,6 +249,23 @@ def _fetch_account_status() -> dict:
             "free_margin": _decimal(account.margin_free),
             "timestamp": now,
         },
+        "positions": [
+            {
+                "ticket": int(position.ticket),
+                "symbol": position.symbol,
+                "side": "buy"
+                if position.type == getattr(mt5, "POSITION_TYPE_BUY", 0)
+                else "sell",
+                "volume": _decimal(position.volume),
+                "price_open": _decimal(position.price_open),
+                "stop_loss": _decimal(position.sl),
+                "take_profit": _decimal(position.tp),
+                "profit": _decimal(position.profit),
+                "swap": _decimal(position.swap),
+                "opened_at": datetime.fromtimestamp(position.time, timezone.utc),
+            }
+            for position in positions
+        ],
         "host_cpu_percent": Decimal(str(psutil.cpu_percent(interval=None))),
         "host_memory_percent": Decimal(str(psutil.virtual_memory().percent)),
         "fetched_at": now,
@@ -415,34 +438,43 @@ def _collect_market_data(
         if tick is not None:
             time_msc = int(getattr(tick, "time_msc", 0) or tick.time * 1000)
             if time_msc > tick_cursors.get(symbol, 0):
-                tick_key = (
-                    f"{symbol}|{time_msc}|{tick.bid}|{tick.ask}|"
-                    f"{getattr(tick, 'last', 0)}|{getattr(tick, 'flags', 0)}"
+                tick_timestamp = datetime.fromtimestamp(
+                    time_msc / 1000, timezone.utc
                 )
-                tick_id = uuid5(UUID("38b3b12a-5a34-4b18-8f11-4e0979a30b60"), tick_key)
-                messages.append(
-                    (
-                        (symbol, "tick"),
-                        time_msc,
-                        "tick",
-                        {
-                            "tick_id": str(tick_id),
-                            "symbol": symbol,
-                            "timestamp": datetime.fromtimestamp(
-                                time_msc / 1000, timezone.utc
-                            ).isoformat(),
-                            "bid": str(tick.bid),
-                            "ask": str(tick.ask),
-                            "last": str(tick.last) if tick.last and tick.last > 0 else None,
-                            "volume": (
-                                str(tick.volume_real)
-                                if getattr(tick, "volume_real", 0) > 0
-                                else None
-                            ),
-                            "source": "mt5-host-adapter",
-                        },
+                if not is_fresh_market_tick(tick_timestamp):
+                    logger.info(
+                        "Ignoring stale MT5 tick for %s (age %.1fs); waiting for a new quote",
+                        symbol,
+                        market_tick_age_seconds(tick_timestamp),
                     )
-                )
+                    tick_cursors[symbol] = time_msc
+                else:
+                    tick_key = (
+                        f"{symbol}|{time_msc}|{tick.bid}|{tick.ask}|"
+                        f"{getattr(tick, 'last', 0)}|{getattr(tick, 'flags', 0)}"
+                    )
+                    tick_id = uuid5(UUID("38b3b12a-5a34-4b18-8f11-4e0979a30b60"), tick_key)
+                    messages.append(
+                        (
+                            (symbol, "tick"),
+                            time_msc,
+                            "tick",
+                            {
+                                "tick_id": str(tick_id),
+                                "symbol": symbol,
+                                "timestamp": tick_timestamp.isoformat(),
+                                "bid": str(tick.bid),
+                                "ask": str(tick.ask),
+                                "last": str(tick.last) if tick.last and tick.last > 0 else None,
+                                "volume": (
+                                    str(tick.volume_real)
+                                    if getattr(tick, "volume_real", 0) > 0
+                                    else None
+                                ),
+                                "source": "mt5-host-adapter",
+                            },
+                        )
+                    )
 
         for timeframe_name, timeframe_value in timeframes:
             cursor_key = (symbol, timeframe_name)
@@ -517,19 +549,10 @@ async def _publish_market_data(client: httpx.AsyncClient) -> None:
     token = os.environ.get("MT5_ADAPTER_TOKEN", "")
     cursors: dict[tuple[str, str], int] = {}
     tick_cursors: dict[str, int] = {}
-    last_backfill = 0.0
     while True:
         try:
-            backfill_interval = max(
-                60,
-                int(os.environ.get("MT5_MARKET_BACKFILL_INTERVAL_SECONDS", "300")),
-            )
-            if time.monotonic() - last_backfill >= backfill_interval:
-                cursors.clear()
-                tick_cursors.clear()
-                last_backfill = time.monotonic()
             messages = await asyncio.to_thread(
-                    _collect_market_data_serialized,
+                _collect_market_data_serialized,
                 cursors,
                 tick_cursors,
             )

@@ -3,13 +3,12 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import ValidationError
 
 from event_bus.redis_bus import RedisEventBus
 from schemas.messages import PatternSetupSignal
-from services.ai_engine.app.circuit_breaker import CircuitState
 from services.ai_engine.app.gateway import AIGateway
 from services.ai_engine.app.models import (
     AIAnalysisRequest,
@@ -84,23 +83,32 @@ app = FastAPI(title="ai-engine", version="0.2.0", lifespan=lifespan)
 @app.get("/health", tags=["operations"])
 async def health() -> dict[str, str]:
     gateway: AIGateway = app.state.ai_gateway
+    available = gateway.is_available
     return {
-        "status": "ok",
+        "status": "ok" if available else "degraded",
         "service": "ai-engine",
         "ai_state": (
             AIAvailability.ONLINE.value
-            if gateway.breaker.state == CircuitState.CLOSED
+            if available
             else AIAvailability.OFFLINE.value
         ),
         "circuit_state": gateway.breaker.state.value,
+        "provider_configured": "yes" if gateway.provider_configured else "no",
     }
 
 
 @app.post("/analyze", response_model=AIAnalysisResponse, tags=["analysis"])
-async def analyze(request: AIAnalysisRequest) -> AIAnalysisResponse:
+async def analyze(request: Request) -> AIAnalysisResponse:
     gateway: AIGateway = app.state.ai_gateway
     try:
-        return await gateway.analyze(request)
+        analysis_request = AIAnalysisRequest.model_validate_json(await request.body())
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=exc.errors(include_url=False),
+        ) from exc
+    try:
+        return await gateway.analyze(analysis_request)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

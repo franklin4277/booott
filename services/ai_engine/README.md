@@ -18,7 +18,15 @@ risk multiplier. A deterministic quantitative override is honored only when
 and it supplies all three override fields. Treat the override producer and
 transport as trusted internal components.
 
-Set `AI_PROVIDER=openai` or `anthropic`, `AI_MODEL`, and a provider key. The
-service accepts `AI_API_KEY` as the provider key, or provider-specific
-`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`. Keep real credentials in an untracked
-deployment secret store, not in the checked-in example.
+Set `AI_PROVIDER=openai`, `openrouter`, or `anthropic`, `AI_MODEL`, and a
+provider key. The service accepts `AI_API_KEY` as the provider key, or the
+provider-specific `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, or
+`ANTHROPIC_API_KEY`. OpenRouter uses its OpenAI-compatible API endpoint. Keep
+real credentials in an untracked deployment secret store, not in the
+checked-in example.
+
+The AI service reports degraded health and publishes `ai_state=OFFLINE` until
+the provider completes a successful analysis, when credentials are missing, or
+when the circuit breaker is open. Set `FEATURE_AI_SIGNALS=true` to require an
+AI result before risk approval; when AI is unavailable, its fail-safe
+`NO_TRADE` result prevents broker execution.

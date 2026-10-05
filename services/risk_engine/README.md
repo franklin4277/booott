@@ -30,11 +30,18 @@ against heat and correlated exposure. Reservations are released on rejected,
 cancelled, or failed execution reports and reconciled when a portfolio position
 includes the originating signed-order ID in `source_order_id`.
 
-The calendar endpoint must be HTTPS and return either an array of objects or
-`{"events": [...]}`. Each event has `event_id`, `title`, an ISO-8601 timezone-
-aware `timestamp`, `impact`, and `currency`. The API is queried for the
-configured ±15-minute window. Missing, malformed, timed-out, or failed calendar
-responses fail closed as `NEWS_CALENDAR_UNAVAILABLE`.
+News checks use the MT5 terminal's built-in economic calendar through
+`mt5/Experts/EconomicCalendarBridge.mq5`, not an external calendar API.
+Compile and attach that EA to a chart in the connected MT5 terminal. It writes
+high-impact events for the next 48 hours to
+`%APPDATA%\MetaQuotes\Terminal\Common\Files\booott_economic_calendar.tsv`
+every 30 seconds as a UTF-16 snapshot, publishing complete files from a
+temporary file so the risk engine never consumes a partially written snapshot.
+The risk engine reads that shared file and checks the
+configured ±15-minute window. `MT5_CALENDAR_FILE` can override the file path;
+snapshots older than `MT5_CALENDAR_MAX_AGE_SECONDS` (180 seconds by default),
+missing files, and malformed snapshots fail closed as
+`NEWS_CALENDAR_UNAVAILABLE`.
 
 Approvals are HMAC-SHA256 signed using `ORDER_SIGNING_SECRET` and expire five
 seconds after issue time. Rejections are logged as structured

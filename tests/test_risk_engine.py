@@ -1,15 +1,17 @@
 import os
+import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
 from schemas.events import EventEnvelope
 from schemas.messages import (
+    AccountState,
     AIAnalysisResult,
     AIRecommendation,
-    AccountState,
     ExecutionReport,
     ExecutionStatus,
     PatternSetupSignal,
@@ -160,7 +162,7 @@ class CalendarWindowTests(unittest.IsolatedAsyncioTestCase):
     async def test_high_impact_event_is_matched_only_inside_embargo_window(self) -> None:
         class InMemoryCalendar(EconomicCalendarClient):
             def __init__(self, event):
-                super().__init__(url="https://calendar.invalid")
+                super().__init__(file_path="unused-calendar-snapshot.tsv")
                 self.event = event
                 self.requested_window = None
 
@@ -197,6 +199,62 @@ class CalendarWindowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(
             await calendar.has_high_impact_event({"USD"}, now, embargo_minutes=15)
         )
+
+
+class MT5CalendarSnapshotTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reads_and_filters_fresh_mt5_snapshot(self) -> None:
+        now = datetime.now(UTC)
+        event_time = now + timedelta(minutes=5)
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "calendar.tsv"
+            snapshot.write_text(
+                f"generated_at_utc={int(now.timestamp())}\n"
+                f"123\tUSD\tHIGH\t{int(event_time.timestamp())}\tRate decision\n"
+                f"124\tEUR\tMEDIUM\t{int(event_time.timestamp())}\tSurvey\n",
+                encoding="utf-16",
+            )
+            calendar = EconomicCalendarClient(snapshot, max_age_seconds=60)
+
+            events = await calendar.events_between(
+                now,
+                now + timedelta(minutes=15),
+            )
+            embargo = await calendar.has_high_impact_event(
+                {"USD"},
+                now,
+                embargo_minutes=15,
+            )
+
+        self.assertEqual(len(events), 2)
+        self.assertEqual(embargo.event_id, "123")
+
+    async def test_missing_stale_or_invalid_mt5_snapshot_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            snapshot = Path(directory) / "calendar.tsv"
+            calendar = EconomicCalendarClient(snapshot, max_age_seconds=60)
+            with self.assertRaises(CalendarUnavailableError):
+                await calendar.events_between(
+                    datetime.now(UTC),
+                    datetime.now(UTC) + timedelta(minutes=15),
+                )
+
+            old_time = int((datetime.now(UTC) - timedelta(minutes=5)).timestamp())
+            snapshot.write_text(f"generated_at_utc={old_time}\n", encoding="utf-16")
+            with self.assertRaises(CalendarUnavailableError):
+                await calendar.events_between(
+                    datetime.now(UTC),
+                    datetime.now(UTC) + timedelta(minutes=15),
+                )
+
+            snapshot.write_text(
+                f"generated_at_utc={int(datetime.now(UTC).timestamp())}\ninvalid\n",
+                encoding="utf-16",
+            )
+            with self.assertRaises(CalendarUnavailableError):
+                await calendar.events_between(
+                    datetime.now(UTC),
+                    datetime.now(UTC) + timedelta(minutes=15),
+                )
 
 
 class RiskEngineTests(unittest.IsolatedAsyncioTestCase):

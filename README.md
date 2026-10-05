@@ -21,7 +21,6 @@ local-process trading platform.
 ├── event_bus/
 ├── utils/
 ├── services/
-│   ├── common/
 │   ├── api_gateway/app/
 │   ├── risk_engine/app/
 │   ├── market_engine/app/
@@ -63,8 +62,11 @@ Publish a current `PortfolioSnapshot` (account equity, daily starting equity,
 and each open position's risk amount) to `risk.portfolio`. Approved orders
 are signed and published to `orders.approved`; rejections publish structured
 events to `risk.rejections` and `system.alerts`. Configure a trusted HTTPS
-economic calendar with `CALENDAR_API_URL`; until it is reachable, the engine
-rejects order approvals.
+MT5 calendar bridge by compiling and attaching
+`mt5/Experts/EconomicCalendarBridge.mq5` in the logged-in terminal. The EA
+publishes MT5 built-in high-impact calendar events to the shared Common Files
+folder; until a fresh snapshot is available, the Risk Engine rejects order
+approvals.
 
 `reconciliation` records bar/signal/AI/order/execution event lineage, and
 reconciles open positions, pending orders, closures, and account equity against
@@ -140,6 +142,13 @@ delivery guarantees are required.
    ```
 6. Check `http://localhost:8000/health` (api-gateway) and
    `http://localhost:8020/health` (market-data ingest).
+
+For a browser-based local monitoring view, open
+`http://127.0.0.1:8000/dashboard`. The dashboard auto-refreshes service health,
+broker account balance, equity, margin, live MT5 positions, and tracked
+executions every 10 seconds. Account and position details require the MT5 host
+adapter to be connected and are restricted to connections from the local
+machine.
 
 Stop all services with:
 
@@ -265,9 +274,13 @@ the Risk Engine to approve orders.
 The Windows adapter polls the configured `MT5_MARKET_SYMBOLS` and
 `MT5_MARKET_TIMEFRAMES`, then sends ticks and closed bars to the authenticated
 market-data ingest endpoint. `MT5_MARKET_DATA_ENABLED` controls publishing;
-history is periodically reloaded to repopulate indicators after service
-restarts. Confirm broker-specific symbol names and keep the adapter and
-terminal running on the Windows host.
+closed-bar history is loaded when the adapter starts and newer bars are sent
+incrementally. Ticks older than `MT5_MARKET_MAX_TICK_AGE_SECONDS` (30 seconds
+by default) are discarded by both the adapter and market-data ingress, so a
+weekend's last quote is not treated as live data. Historical closed bars remain
+available for indicator warm-up; the pattern engine rejects signals from stale
+bars. Confirm broker-specific symbol names and keep the adapter and terminal
+running on the Windows host.
 
 Paper trading is enabled by default and does not contact the broker. Keep
 `FEATURE_PAPER_TRADING=true` and `MT5_LIVE_TRADING_ENABLED=false` until the

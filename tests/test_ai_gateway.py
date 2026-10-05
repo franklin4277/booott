@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+import httpx
 from event_bus.redis_bus import RedisEventBus
 from schemas.events import EventEnvelope
 from schemas.messages import (
@@ -14,11 +15,12 @@ from schemas.messages import (
 )
 from services.ai_engine.app.circuit_breaker import CircuitState
 from services.ai_engine.app.gateway import AIGateway
-from services.ai_engine.app.main import consume_pattern_signals
+from services.ai_engine.app.main import app as ai_app, consume_pattern_signals
 from services.ai_engine.app.models import (
     AIAnalysisRequest,
     AIAvailability,
 )
+from services.ai_engine.app.provider import UnavailableProvider
 from services.ai_engine.app.rate_limiter import TokenBucketRateLimiter
 
 
@@ -61,6 +63,76 @@ class FakeBus:
 
 
 class AIGatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unconfigured_provider_is_reported_offline(self) -> None:
+        bus = FakeBus()
+        gateway = AIGateway(
+            bus,  # type: ignore[arg-type]
+            provider=UnavailableProvider("provider key is missing"),
+        )
+
+        await gateway.publish_state()
+
+        self.assertFalse(gateway.is_available)
+        channel, state, _ = bus.published[0]
+        self.assertEqual(channel, "ai.state")
+        self.assertEqual(state.ai_state, AIAvailability.OFFLINE)
+        self.assertEqual(state.reason, "provider key is missing")
+
+    async def test_provider_is_offline_until_successful_analysis(self) -> None:
+        class FailingProvider:
+            async def analyze(self, signal, market_context):
+                raise TimeoutError
+
+        bus = FakeBus()
+        gateway = AIGateway(
+            bus,  # type: ignore[arg-type]
+            provider=FailingProvider(),  # type: ignore[arg-type]
+            rate_limit_capacity=10,
+            rate_limit_refill_per_second=10,
+        )
+
+        self.assertFalse(gateway.is_available)
+        await gateway.publish_state()
+        self.assertEqual(bus.published[-1][1].ai_state, AIAvailability.OFFLINE)
+
+        with self.assertLogs("services.ai_engine.app.gateway", level="ERROR"):
+            response = await gateway.analyze(AIAnalysisRequest(signal=make_signal()))
+
+        self.assertFalse(gateway.is_available)
+        self.assertEqual(response.ai_state, AIAvailability.OFFLINE)
+        self.assertIn("TimeoutError", bus.published[-1][1].reason)
+
+    async def test_analyze_endpoint_accepts_strict_model_json(self) -> None:
+        class SuccessfulProvider:
+            async def analyze(self, signal, market_context):
+                return make_result(signal)
+
+        gateway = AIGateway(
+            FakeBus(),  # type: ignore[arg-type]
+            provider=SuccessfulProvider(),  # type: ignore[arg-type]
+            rate_limit_capacity=10,
+            rate_limit_refill_per_second=10,
+        )
+        ai_app.state.ai_gateway = gateway
+        transport = httpx.ASGITransport(app=ai_app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://ai.test",
+        ) as client:
+            response = await client.post(
+                "/analyze",
+                json={
+                    "signal": make_signal().model_dump(mode="json"),
+                    "market_context": {},
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["result"]["decision"], "BUY")
+        self.assertTrue(gateway.is_available)
+        state_message = ai_app.state.ai_gateway.bus.published[-1][1]
+        self.assertEqual(state_message.ai_state, AIAvailability.ONLINE)
+
     async def test_three_failures_open_circuit_publish_offline_and_fail_safe(self) -> None:
         class FailingProvider:
             calls = 0
@@ -137,6 +209,7 @@ class AIGatewayTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(provider.calls, 4)
         self.assertEqual(gateway.breaker.state, CircuitState.CLOSED)
+        self.assertTrue(gateway.is_available)
         self.assertEqual(recovered.ai_state, AIAvailability.ONLINE)
         self.assertEqual(recovered.result.decision, AIRecommendation.BUY)
 
